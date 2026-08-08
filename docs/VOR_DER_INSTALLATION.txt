@@ -1,0 +1,11 @@
+ArchivAgent 6.0 Alpha
+
+ArchivAgent lädt keine OCR-Komponenten automatisch herunter.
+
+Der separate OCR-Assistent erklärt:
+- wozu Python benötigt wird,
+- woher Python stammt,
+- woher Kraken stammt,
+- welches Handschriftenmodell verwendet wird.
+
+Erst nach ausdrücklicher Zustimmung wird die OCR-Umgebung eingerichtet.
