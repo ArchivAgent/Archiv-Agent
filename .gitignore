@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+build/
+dist/
+stage/
+output/
+.pytest_cache/
+*.spec
