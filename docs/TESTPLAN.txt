@@ -1,0 +1,20 @@
+ARCHIVAGENT 6.0 – TESTPLAN
+
+OHNE SETUP:
+[ ] scripts\run_ocr_assistant_dev.bat starten
+[ ] OCR-Assistent öffnet ohne Ausnahme
+[ ] Button „Warum wird Python benötigt?“ funktioniert
+[ ] Python-Prüfung funktioniert
+[ ] Zustimmung ist Voraussetzung für Kraken-Installation
+
+MIT SETUP:
+[ ] BUILD_RELEASE.bat erfolgreich
+[ ] Installation in frischer Sandbox
+[ ] OCR-Assistent öffnet
+[ ] Python sichtbar installieren
+[ ] Kraken sichtbar installieren
+[ ] OCR-Test zeigt Kraken-Version
+[ ] Bei fehlender kraken.exe meldet der Test den vollständigen erwarteten Pfad
+[ ] Bei vorhandener, nicht startbarer kraken.exe zeigt der Test Fehlercode und DLL-/PyTorch-Hinweis
+[ ] Nach erfolgreichem Test startet eine echte HTR-Erkennung über kraken.exe
+[ ] Seiten 20 bis 22 erzeugen genau drei Textdateien
