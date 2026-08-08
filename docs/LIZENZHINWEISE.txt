@@ -1,0 +1,10 @@
+ArchivAgent 6.0 Alpha
+
+Deutsches Handschriftenmodell:
+Urheber: Stefan Weil
+Quelle: https://doi.org/10.5281/zenodo.7933463
+Lizenz: CC BY-SA 4.0
+
+Kraken OCR:
+Lizenz: Apache License 2.0
+Quelle: PyPI / Kraken-Projekt
