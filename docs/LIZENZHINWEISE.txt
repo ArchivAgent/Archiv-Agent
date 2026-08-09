@@ -1,4 +1,4 @@
-ArchivAgent 6.0 Alpha
+ArchivAgent 7.0 RC2
 
 Deutsches Handschriftenmodell:
 Urheber: Stefan Weil
