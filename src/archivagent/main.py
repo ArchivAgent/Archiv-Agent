@@ -2,6 +2,7 @@ from __future__ import annotations
 import csv, json, os, re, ssl, subprocess, sys, traceback, faulthandler, urllib.parse, urllib.request, xml.etree.ElementTree as ET
 import certifi
 from pathlib import Path
+from archivagent.image_import import import_image_files
 from PySide6.QtCore import Qt, QThread, QUrl, QObject, Signal, Slot, QRectF, QTimer, QPointF
 from PySide6.QtGui import QAction, QDesktopServices, QFont, QPixmap, QPen, QColor, QTextCursor, QTextCharFormat, QTextDocument, QPainter, QBrush, QPolygonF
 from PySide6.QtWidgets import (QApplication,QCheckBox,QComboBox,QDoubleSpinBox,QFileDialog,QFormLayout,QFrame,QGridLayout,QGroupBox,QHBoxLayout,QLabel,QLineEdit,QListWidget,QMainWindow,QMessageBox,QPlainTextEdit,QTextEdit,QProgressBar,QPushButton,QSpinBox,QSplitter,QStackedWidget,QTableWidget,QTableWidgetItem,QToolBar,QVBoxLayout,QWidget,QGraphicsView,QGraphicsScene,QGraphicsPixmapItem,QGraphicsRectItem,QGraphicsItem,QHeaderView,QMenu,QAbstractSpinBox)
@@ -16,7 +17,7 @@ BASE_DEFAULT=str(installed_app_dir())
 def safe_name(s):
     s=re.sub(r'[<>:"/\\|?*]+','_',s); s=re.sub(r'\s+',' ',s).strip(' ._'); return s[:160] or 'Unbenannt'
 def request_bytes(url):
-    req=urllib.request.Request(url,headers={'User-Agent':'ArchivAgent/6.0','Accept':'*/*'})
+    req=urllib.request.Request(url,headers={'User-Agent':'ArchivAgent/7.0','Accept':'*/*'})
     context=ssl.create_default_context(cafile=certifi.where())
     with urllib.request.urlopen(req,timeout=120,context=context) as r:
         return r.read()
@@ -457,7 +458,7 @@ class ReadingArchivist(QWidget):
 
 class Main(QMainWindow):
     def __init__(self):
-        super().__init__();self.setWindowTitle('ArchivAgent 6.0 RC9');self.resize(1220,800);self.setMinimumSize(980,680);self.thread=None;self.worker=None;self.pending_result=None;self.current_image_index=-1;self.current_images=[];self.current_hit=None;self.current_auto_bbox=None;self.current_position_key=None;self.all_hit_rows=[];self.hit_ratings={};self.last_rating_action=None
+        super().__init__();self.setWindowTitle('ArchivAgent 7.0 RC2');self.resize(1220,800);self.setMinimumSize(980,680);self.thread=None;self.worker=None;self.pending_result=None;self.current_image_index=-1;self.current_images=[];self.current_hit=None;self.current_auto_bbox=None;self.current_position_key=None;self.all_hit_rows=[];self.hit_ratings={};self.last_rating_action=None
         self.base=QLineEdit(BASE_DEFAULT);self.project=QComboBox();self.project.setEditable(True);self.book=QComboBox();self.book.setEditable(True);self.url=QLineEdit();self.names=QLineEdit();self.start=QSpinBox();self.start.setRange(1,999999);self.start.setValue(1);self.start.setSingleStep(1);self.start.setAccelerated(True);self.start.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons);self.end=QSpinBox();self.end.setRange(0,999999);self.end.setValue(0);self.end.setSingleStep(1);self.end.setAccelerated(True);self.end.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons);self.threshold=QDoubleSpinBox();self.threshold.setRange(.5,1);self.threshold.setValue(.72);self.threshold.setSingleStep(.01);self.threshold.setDecimals(2);self.threshold.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons);self.force=QCheckBox('Vorhandene Texterkennung erneut ausführen');self.log=QPlainTextEdit();self.log.setReadOnly(True);self.progress=QProgressBar();self.stats={};self.hit_rows=[];self.table=QTableWidget(0,7);self.table.setHorizontalHeaderLabels(['Status','Name','Buch','Seite','Übereinstimmung','Textumgebung','Quelle']);self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows);self.scan_view=ScanView();self.scan_view.save_marker_callback=self.save_current_marker;self.scan_view.reset_marker_callback=self.reset_current_marker;self.scan_view.marker_changed_callback=self.marker_moved;self.scan_title=QLabel('Kein Treffer ausgewählt');self.scan_title.setWordWrap(True);self.page_label=QLabel('Seite – / –');self.ocr_title=QLabel('Erkannter Text');self.ocr_title.setFont(QFont('Segoe UI',11,QFont.Weight.Bold));self.ocr_text=QTextEdit();self.ocr_text.setReadOnly(True);self.ocr_text.setPlaceholderText('Zu diesem Treffer wurde noch kein erkannter Text gefunden.');self.ocr_text.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth);self.book_table=QTableWidget(0,5);self.book_table.setHorizontalHeaderLabels(['Buch','Seiten','Heruntergeladen','Text erkannt','Treffer']);self.book_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.nav=QListWidget();self.nav.addItems(['Buch durchsuchen','Bücher','Treffer prüfen','Übersicht','Statistik','Einstellungen']);self.nav.setFixedWidth(220);self.stack=QStackedWidget()
         for w in [self.search_page(),self.books_page(),self.hits_page(),self.dashboard(),self.statistics_page(),self.settings_page()]:self.stack.addWidget(w)
@@ -468,7 +469,7 @@ class Main(QMainWindow):
     def select_box(self):
         g=QGroupBox('Auswahl');f=QFormLayout(g);f.addRow('Projekt',self.project);f.addRow('Buch',self.book);self.project.currentTextChanged.connect(self.refresh_books);return g
     def dashboard(self):
-        w=QWidget();l=QVBoxLayout(w);l.addWidget(self.head('ArchivAgent 6.0 RC9','Kirchenbücher herunterladen, Schrift erkennen, nach Familiennamen suchen und Ergebnisse prüfen.'));g=QGridLayout()
+        w=QWidget();l=QVBoxLayout(w);l.addWidget(self.head('ArchivAgent 7.0 RC2','Online-Archive und eigene Scans lesen, nach Familiennamen suchen und Ergebnisse prüfen.'));g=QGridLayout()
         for i,k in enumerate(['Projekte','Bücher','Scans','Treffer']):
             c=QFrame();c.setObjectName('card');cl=QVBoxLayout(c);a=QLabel(k);a.setFont(QFont('Segoe UI',12,QFont.Weight.Bold));v=QLabel('0');v.setFont(QFont('Segoe UI',25,QFont.Weight.Bold));self.stats[k]=v;cl.addWidget(a);cl.addWidget(v);g.addWidget(c,i//2,i%2)
         l.addLayout(g);l.addStretch();return w
@@ -501,8 +502,9 @@ class Main(QMainWindow):
         a=QPushButton('Alles automatisch starten');a.setObjectName('primary');a.clicked.connect(lambda:self.start_task('all'))
         h=QPushButton('Vorhandenes Buch durchsuchen');h.clicked.connect(lambda:self.start_task('htr'))
         d=QPushButton('Nur Seiten herunterladen');d.clicked.connect(lambda:self.start_task('download'))
+        i=QPushButton('Eigene Scans/Bilder hinzufügen');i.clicked.connect(self.import_own_images)
         c=QPushButton('Abbrechen');c.clicked.connect(self.cancel)
-        r.addWidget(a);r.addWidget(h);r.addWidget(d);r.addWidget(c);r.addStretch();l.addLayout(r)
+        r.addWidget(a);r.addWidget(h);r.addWidget(d);r.addWidget(i);r.addWidget(c);r.addStretch();l.addLayout(r)
         l.addWidget(self.task_panel())
         return w
 
@@ -926,8 +928,21 @@ class Main(QMainWindow):
         page_limit=0 if end_page==0 else end_page-start_page+1
         p={'base':str(self.bd()),'project':self.project.currentText().strip(),'book':self.book.currentText().strip(),'url':self.url.text().strip(),'start':start_page,'end':end_page,'limit':page_limit,'threshold':self.threshold.value(),'force':self.force.isChecked(),'names':self.names.text().strip()}
         if not p['project'] or not p['book']:QMessageBox.warning(self,'Eingabe prüfen','Projekt und Buch ausfüllen.');return
-        if a in ('download','all') and not p['url']:QMessageBox.warning(self,'Eingabe prüfen','Link zum Kirchenbuch einfügen.');return
-        self.log.appendPlainText('\n'+'='*60);self.log.appendPlainText(f"[BEREICH] Suche Seiten {p['start']} bis {p['end'] if p['end'] else 'Ende'} ({p['limit'] if p['limit'] else 'alle restlichen'} Seite(n))");self.archivist.stop();self.live_status.setText('Vorgang wird vorbereitet');self.progress.setRange(0,0);self.thread=QThread(self);self.worker=Worker(a,p);self.worker.moveToThread(self.thread);self.thread.started.connect(self.worker.run);self.worker.log.connect(self.log.appendPlainText);self.worker.progress.connect(self.update_progress);self.worker.stage.connect(self.update_stage);self.worker.finished.connect(self.worker_done);self.thread.finished.connect(self.thread_done);self.thread.start()
+        local_mode_count=0
+        if a in ('download','all') and not p['url']:
+            local_images=find_images(self.bkd())
+            if a=='all' and local_images:
+                a='htr'
+                local_mode_count=len(local_images)
+            else:
+                QMessageBox.warning(
+                    self,'Eingabe prüfen',
+                    'Für den Download fehlt ein METS-/DFG-Viewer-Link.\n\n'
+                    'Eigene Scans bitte zuerst über „Eigene Scans/Bilder hinzufügen“ importieren.'
+                );return
+        self.log.appendPlainText('\n'+'='*60);self.log.appendPlainText(f"[BEREICH] Suche Seiten {p['start']} bis {p['end'] if p['end'] else 'Ende'} ({p['limit'] if p['limit'] else 'alle restlichen'} Seite(n))")
+        if local_mode_count:self.log.appendPlainText(f'[MODUS] Kein Viewer-Link angegeben; {local_mode_count} eigene Bilddatei(en) werden direkt erkannt und durchsucht.')
+        self.archivist.stop();self.live_status.setText('Vorgang wird vorbereitet');self.progress.setRange(0,0);self.thread=QThread(self);self.worker=Worker(a,p);self.worker.moveToThread(self.thread);self.thread.started.connect(self.worker.run);self.worker.log.connect(self.log.appendPlainText);self.worker.progress.connect(self.update_progress);self.worker.stage.connect(self.update_stage);self.worker.finished.connect(self.worker_done);self.thread.finished.connect(self.thread_done);self.thread.start()
     @Slot(str)
     def update_stage(self,text):
         self.live_status.setText(text)
@@ -978,6 +993,31 @@ class Main(QMainWindow):
     def choose_base(self):
         d=QFileDialog.getExistingDirectory(self,'ArchivAgent-Ordner',self.base.text())
         if d:self.base.setText(d);self.refresh()
+    def import_own_images(self):
+        project=self.project.currentText().strip();book=self.book.currentText().strip()
+        if not project or not book:
+            QMessageBox.warning(self,'Eigene Bilder hinzufügen','Bitte zuerst Projekt und Buch angeben.');return
+        files,_=QFileDialog.getOpenFileNames(
+            self,'Eigene Scans oder Bilder auswählen','',
+            'Bilddateien (*.png *.jpg *.jpeg *.tif *.tiff *.jp2 *.webp);;Alle Dateien (*)'
+        )
+        if not files:return
+        try:
+            imported=import_image_files(files,self.bkd())
+            if not imported:
+                QMessageBox.warning(self,'Eigene Bilder hinzufügen','Keine unterstützten Bilddateien ausgewählt.');return
+            first=image_page_number(imported[0]) or 1;last=image_page_number(imported[-1]) or first
+            self.start.setValue(first);self.end.setValue(last);self.url.clear();self.refresh()
+            self.project.setCurrentText(project);self.refresh_books();self.book.setCurrentText(book);self.update_book()
+            QMessageBox.information(
+                self,'Bilder hinzugefügt',
+                f'{len(imported)} Bilddatei(en) wurden in Originalseiten eingefügt und als '
+                f'Seite {first} bis {last} nummeriert.\n\n'
+                'Familiennamen eintragen und anschließend „Alles automatisch starten“ wählen.'
+            )
+        except Exception as exc:
+            write_crash_log('Fehler beim Import eigener Bilder',exc)
+            QMessageBox.critical(self,'Import fehlgeschlagen',str(exc))
     def style(self):self.setStyleSheet("QMainWindow,QWidget{background:#f4f6f8;color:#1f2933;font-family:'Segoe UI';font-size:10.5pt} QListWidget{background:#17212b;color:#e7edf3;border:0;padding:10px;font-size:11pt} QListWidget::item{padding:13px 12px;border-radius:6px} QListWidget::item:selected{background:#2d80c3;color:white} QGroupBox,QFrame#card{background:white;border:1px solid #d8dee5;border-radius:8px;margin-top:10px;padding:14px} QLineEdit,QSpinBox,QDoubleSpinBox,QPlainTextEdit,QComboBox,QTableWidget{background:white;border:1px solid #c8d0d9;border-radius:5px;padding:6px} QPushButton{background:white;border:1px solid #aeb8c2;border-radius:6px;padding:8px 14px} QPushButton#primary{background:#1769aa;color:white;border:1px solid #1769aa;font-weight:600} QProgressBar{border:1px solid #c8d0d9;border-radius:5px;background:white;text-align:center} QProgressBar::chunk{background:#2d80c3}")
 
 def crash_log_path():
