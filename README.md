@@ -5,12 +5,14 @@ Kirchenbüchern, Urkunden, Amtsbüchern und weiteren historischen Archivalien. E
 ausgewählte Seiten aus kompatiblen METS-/DFG-Viewern, erkennt Handschrift mit Kraken
 OCR und durchsucht die Ergebnisse nach Familiennamen.
 
-> **Testversion:** ArchivAgent 6.0 RC9 ist eine öffentliche Vorabversion. Bitte
+> **Testversion:** ArchivAgent 7.0 RC2 ist eine öffentliche Vorabversion. Bitte
 > zunächst mit kleinen Seitenbereichen und Kopien wichtiger Forschungsdaten testen.
 
 ## Funktionen
 
 - Buchseiten über einen METS-/DFG-Viewer-Link herunterladen
+- eigene Scans, Fotos und gespeicherte Dokumentseiten importieren
+- den benötigten Ordner `Originalseiten` automatisch anlegen und Seiten nummerieren
 - frei wählbare Seitenbereiche verarbeiten
 - historische Handschrift lokal mit Kraken OCR erkennen
 - mehrere Familiennamen mit einstellbarer Suchgenauigkeit suchen
@@ -40,6 +42,17 @@ die Handschriftenerkennung lokal aus und durchsucht den erkannten Text. Falls da
 Archiv einen Link mit der Bezeichnung **METS**, **METS-XML** oder **DFG-Viewer**
 anbietet, kann dieser direkt verwendet werden.
 
+
+## Eigene Scans und Bilddateien untersuchen
+
+ArchivAgent kann neben Online-Archiven auch eigene Scans, fotografierte Dokumente und
+bereits gespeicherte Archivseiten untersuchen. Über **Eigene Scans/Bilder hinzufügen**
+können mehrere PNG-, JPG-, TIFF-, JP2- oder WebP-Dateien ausgewählt werden.
+ArchivAgent legt `Originalseiten` automatisch an und nummeriert die importierten
+Seiten fortlaufend.
+
+Danach Familiennamen eintragen und **Alles automatisch starten** wählen. Ist kein
+Viewer-Link vorhanden, verarbeitet ArchivAgent automatisch die importierten Bilder.
 
 ## Screenshots
 
@@ -76,9 +89,9 @@ lädt OCR-Komponenten erst nach ausdrücklicher Zustimmung im OCR-Assistenten.
 
 ## Installation der Testversion
 
-1. Unter **Releases** die Datei `ArchivAgent_Setup_6.0.0_RC9.exe` herunterladen.
+1. Unter **Releases** die Datei `ArchivAgent_Setup_7.0.0_RC2.exe` herunterladen.
 2. Optional die SHA-256-Prüfsumme mit
-   `ArchivAgent_Setup_6.0.0_RC9_SHA256.txt` vergleichen.
+   `ArchivAgent_Setup_7.0.0_RC2_SHA256.txt` vergleichen.
 3. Setup starten und den Installationshinweisen folgen.
 4. Im OCR-Assistenten Python und Microsoft Visual C++ prüfen.
 5. Der Installation von Kraken zustimmen. Die erste Einrichtung kann einige Zeit dauern.
@@ -131,9 +144,9 @@ Das Modell wird unter **CC BY-SA 4.0** verwendet. Weitere Hinweise befinden sich
 
 ArchivAgent wird kontinuierlich verbessert und um neue Funktionen erweitert. Hinweise
 aus praktischen Tests fließen direkt in die weitere Entwicklung ein. Geplant und
-teilweise bereits in Erprobung sind unter anderem der komfortable Import eigener
-Scans, präzisere Treffer- und Zeilenmarkierungen sowie erweiterte Möglichkeiten zur
-Korrektur historischer Handschriftenerkennung.
+Der komfortable Import eigener Scans ist seit Version 7 verfügbar. In weiterer
+Entwicklung befinden sich präzisere Treffer- und Zeilenmarkierungen sowie erweiterte
+Möglichkeiten zur Korrektur historischer Handschriftenerkennung.
 
 Neue Test- und Programmversionen werden im Bereich **Releases** veröffentlicht.
 Änderungsvorschläge, Fehlerberichte und Erfahrungen mit unterschiedlichen Archiven
@@ -141,7 +154,7 @@ und Handschriften sind über die **GitHub-Issues** ausdrücklich willkommen.
 
 ## Status
 
-Aktuelle Testversion: **ArchivAgent 6.0 RC9**
+Aktuelle Testversion: **ArchivAgent 7.0 RC2**
 
 **Idee, Konzeption und Projektleitung: Frank Bernbeck**
 
