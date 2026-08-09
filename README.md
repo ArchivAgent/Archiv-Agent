@@ -137,7 +137,8 @@ Bitte unter **Issues** einen Fehlerbericht eröffnen. Hilfreich sind:
 Der Programmcode steht unter der [GNU General Public License v3.0](LICENSE).
 
 ArchivAgent verwendet Kraken OCR und ein Handschriftenmodell von **Stefan Weil**.
-Das Modell wird unter **CC BY-SA 4.0** verwendet. Weitere Hinweise befinden sich in
+Das Modell ist auf [Zenodo (DOI 10.5281/zenodo.7933463)](https://doi.org/10.5281/zenodo.7933463)
+veröffentlicht und wird unter **CC BY-SA 4.0** verwendet. Weitere Hinweise befinden sich in
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) und im Ordner `licenses`.
 
 ## Aktive Weiterentwicklung
