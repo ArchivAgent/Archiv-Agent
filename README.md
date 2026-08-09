@@ -1,9 +1,9 @@
 # ArchivAgent
 
 ArchivAgent ist ein Windows-Programm zur unterstützten Recherche in digitalisierten
-Kirchenbüchern und historischen Archivalien. Es lädt ausgewählte Buchseiten aus
-METS/DFG-Viewern, erkennt Handschrift mit Kraken OCR und durchsucht die Ergebnisse
-nach Familiennamen.
+Kirchenbüchern, Urkunden, Amtsbüchern und weiteren historischen Archivalien. Es lädt
+ausgewählte Seiten aus kompatiblen METS-/DFG-Viewern, erkennt Handschrift mit Kraken
+OCR und durchsucht die Ergebnisse nach Familiennamen.
 
 > **Testversion:** ArchivAgent 6.0 RC9 ist eine öffentliche Vorabversion. Bitte
 > zunächst mit kleinen Seitenbereichen und Kopien wichtiger Forschungsdaten testen.
@@ -18,6 +18,27 @@ nach Familiennamen.
 - Projekte, Trefferlisten und Ergebnisse lokal speichern
 - laufende Texterkennung mit Seitenfortschritt und animiertem Archivarius anzeigen
 - laufende Vorgänge kontrolliert abbrechen
+
+
+## Digitalisierte Archivalie aus einem DFG-Viewer übernehmen
+
+1. Das gewünschte Dokument oder den gewünschten Band im Online-Archiv aufrufen.
+2. Über **Augensymbol**, **Digitalisat**, **Viewer** oder **DFG-Viewer** die
+   Bildansicht öffnen.
+3. Sobald die digitalisierten Seiten sichtbar sind, mit `Strg + L` die vollständige
+   Adresse aus der Browserzeile markieren und mit `Strg + C` kopieren.
+4. Nicht die Bildadresse einer einzelnen Scan-Datei verwenden.
+5. In ArchivAgent ein Projekt und einen aussagekräftigen Titel für die Archivalie
+   eingeben.
+6. **Link aus Zwischenablage** anklicken.
+7. Familiennamen beziehungsweise Suchbegriffe und den gewünschten Seitenbereich
+   angeben.
+8. **Alles automatisch starten** wählen.
+
+ArchivAgent liest die METS-Struktur des Viewers, lädt die ausgewählten Seiten, führt
+die Handschriftenerkennung lokal aus und durchsucht den erkannten Text. Falls das
+Archiv einen Link mit der Bezeichnung **METS**, **METS-XML** oder **DFG-Viewer**
+anbietet, kann dieser direkt verwendet werden.
 
 ## Systemvoraussetzungen
 
