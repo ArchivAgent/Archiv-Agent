@@ -40,7 +40,7 @@ VC_REDIST_DOWNLOAD = "https://aka.ms/vc14/vc_redist.x64.exe"
 class OcrAssistant(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("ArchivAgent 6.0 RC9 – OCR-Assistent")
+        self.setWindowTitle("ArchivAgent 7.0 RC2 – OCR-Assistent")
         self.resize(780, 680)
         self.process: QProcess | None = None
         self.python_exe: Path | None = None
