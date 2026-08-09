@@ -1,4 +1,4 @@
-ARCHIVAGENT 6.0 – TESTPLAN
+ARCHIVAGENT 7.0 RC2 – TESTPLAN
 
 OHNE SETUP:
 [ ] scripts\run_ocr_assistant_dev.bat starten
