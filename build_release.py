@@ -275,7 +275,7 @@ def main() -> int:
         cwd=ROOT,
     )
 
-    setup = OUT / "ArchivAgent_Setup_6.0.0_RC9.exe"
+    setup = OUT / "ArchivAgent_Setup_7.0.0_RC2.exe"
     require(setup, "Setup-Datei")
     if setup.stat().st_size < 1_000_000:
         raise BuildError(
@@ -283,7 +283,7 @@ def main() -> int:
         )
 
     digest = hashlib.sha256(setup.read_bytes()).hexdigest().upper()
-    checksum = OUT / "ArchivAgent_Setup_6.0.0_RC9_SHA256.txt"
+    checksum = OUT / "ArchivAgent_Setup_7.0.0_RC2_SHA256.txt"
     checksum.write_text(
         f"{digest}  {setup.name}\n",
         encoding="ascii",
