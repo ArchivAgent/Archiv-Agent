@@ -1,4 +1,4 @@
-# ArchivAgent 6.0 RC9 testen
+# ArchivAgent 7.0 RC2 testen
 
 Vielen Dank für den Test von ArchivAgent. Die Testversion soll vor allem zeigen,
 ob Installation, Seitenabruf, Handschriftenerkennung und Trefferprüfung auf
@@ -15,6 +15,16 @@ unterschiedlichen Windows-Rechnern zuverlässig funktionieren.
 7. Fortschrittsanzeige und animierten Archivarius beobachten.
 8. Erkannte Texte und Treffer prüfen.
 9. Einen zweiten Lauf starten und einmal kontrolliert abbrechen.
+
+## Eigene Bilder testen
+
+1. Projekt und Buch anlegen oder in die Felder eintragen.
+2. **Eigene Scans/Bilder hinzufügen** wählen.
+3. Mehrere PNG-, JPG- oder TIFF-Dateien auswählen.
+4. Prüfen, ob ArchivAgent den Ordner `Originalseiten` automatisch erstellt und die
+   Bilder als `Seite_0001`, `Seite_0002` usw. einordnet.
+5. Familiennamen eintragen und **Alles automatisch starten** wählen. ArchivAgent
+   muss ohne Viewer-Link direkt die importierten Bilder verarbeiten.
 
 ## Bitte im Fehlerbericht angeben
 
