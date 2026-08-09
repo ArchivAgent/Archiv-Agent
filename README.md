@@ -127,6 +127,18 @@ ArchivAgent verwendet Kraken OCR und ein Handschriftenmodell von **Stefan Weil**
 Das Modell wird unter **CC BY-SA 4.0** verwendet. Weitere Hinweise befinden sich in
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) und im Ordner `licenses`.
 
+## Aktive Weiterentwicklung
+
+ArchivAgent wird kontinuierlich verbessert und um neue Funktionen erweitert. Hinweise
+aus praktischen Tests fließen direkt in die weitere Entwicklung ein. Geplant und
+teilweise bereits in Erprobung sind unter anderem der komfortable Import eigener
+Scans, präzisere Treffer- und Zeilenmarkierungen sowie erweiterte Möglichkeiten zur
+Korrektur historischer Handschriftenerkennung.
+
+Neue Test- und Programmversionen werden im Bereich **Releases** veröffentlicht.
+Änderungsvorschläge, Fehlerberichte und Erfahrungen mit unterschiedlichen Archiven
+und Handschriften sind über die **GitHub-Issues** ausdrücklich willkommen.
+
 ## Status
 
 Aktuelle Testversion: **ArchivAgent 6.0 RC9**
