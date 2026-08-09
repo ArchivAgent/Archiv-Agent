@@ -40,6 +40,29 @@ die Handschriftenerkennung lokal aus und durchsucht den erkannten Text. Falls da
 Archiv einen Link mit der Bezeichnung **METS**, **METS-XML** oder **DFG-Viewer**
 anbietet, kann dieser direkt verwendet werden.
 
+
+## Screenshots
+
+### 1. Digitalisat im Online-Archiv auswählen
+
+Über das Augensymbol wird die gewünschte Archivalie im DFG-Viewer geöffnet.
+
+![Archivalie im Online-Archiv auswählen](docs/images/01-archiv-auswaehlen.png)
+
+### 2. Viewer-Link und Suchangaben übernehmen
+
+Projekt, Titel, Familiennamen und Seitenbereich eintragen und den kopierten
+Viewer-Link über **Link aus Zwischenablage** übernehmen.
+
+![ArchivAgent Suchmaske](docs/images/02-suchmaske.png)
+
+### 3. Download und Texterkennung starten
+
+ArchivAgent lädt die ausgewählten Seiten und zeigt den Fortschritt während der
+lokalen Handschriftenerkennung an.
+
+![ArchivAgent bei der Texterkennung](docs/images/03-texterkennung.png)
+
 ## Systemvoraussetzungen
 
 - Windows 10 oder Windows 11, 64 Bit
