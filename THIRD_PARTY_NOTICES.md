@@ -15,9 +15,6 @@ und wird unter **Creative Commons Attribution-ShareAlike 4.0 International
 (CC BY-SA 4.0)** genutzt. Die Namensnennung und Lizenzhinweise sind bei Weitergabe
 beizubehalten.
 
-- Quelle und Modellbeschreibung: [Zenodo, DOI 10.5281/zenodo.7933463](https://doi.org/10.5281/zenodo.7933463)
-- Lizenz: [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/deed.de)
-
 ## Weitere Komponenten
 
 Python, PySide6, PyTorch, certifi und weitere installierte Pakete unterliegen ihren

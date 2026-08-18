@@ -38,8 +38,14 @@ def main() -> int:
     p.add_argument("--modell", default="")
     p.add_argument("--schwelle", type=float, default=0.72)
     p.add_argument("--names", nargs="*", default=DEFAULT_NAMES)
+    p.add_argument(
+        "--read-only", action="store_true",
+        help="Seiten vollständig erkennen, ohne eine Namenssuche auszuführen.",
+    )
     p.add_argument("--force", action="store_true")
     args = p.parse_args()
+    if args.read_only:
+        args.names = []
 
     project_dir = PROJECTS_DIR / safe_name(args.projekt)
     books = resolve_books(project_dir, args.buch)
@@ -64,6 +70,12 @@ def main() -> int:
         except Exception as exc:
             failed += 1
             print(f"[FEHLER] {title}: {exc}")
+
+    # Beim reinen Lesen dürfen vorhandene Trefferlisten nicht durch eine leere
+    # Namenssuche überschrieben werden.
+    if args.read_only:
+        print("\n=== Vollständige Texterkennung fertig ===")
+        return 1 if failed else 0
 
     # Gemeinsame Trefferliste für alle durchsuchten Bücher.
     combined = project_dir / "Treffer" / "alle_namens_treffer.csv"

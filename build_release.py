@@ -234,6 +234,7 @@ def main() -> int:
     for name in (
         "archiv_agent.py",
         "archiv_htr.py",
+        "archiv_layout.py",
         "archiv_search.py",
         "archiv_utils.py",
     ):
@@ -259,6 +260,7 @@ def main() -> int:
         STAGE / "requirements-ocr.txt",
         STAGE / "archiv_agent.py",
         STAGE / "archiv_htr.py",
+        STAGE / "archiv_layout.py",
         STAGE / "archiv_search.py",
         STAGE / "archiv_utils.py",
         model_dir / "german_handwriting.mlmodel",
@@ -275,7 +277,7 @@ def main() -> int:
         cwd=ROOT,
     )
 
-    setup = OUT / "ArchivAgent_Setup_7.0.0_RC2.exe"
+    setup = OUT / "ArchivAgent_Setup_7.1.0_RC19.exe"
     require(setup, "Setup-Datei")
     if setup.stat().st_size < 1_000_000:
         raise BuildError(
@@ -283,7 +285,7 @@ def main() -> int:
         )
 
     digest = hashlib.sha256(setup.read_bytes()).hexdigest().upper()
-    checksum = OUT / "ArchivAgent_Setup_7.0.0_RC2_SHA256.txt"
+    checksum = OUT / "ArchivAgent_Setup_7.1.0_RC19_SHA256.txt"
     checksum.write_text(
         f"{digest}  {setup.name}\n",
         encoding="ascii",

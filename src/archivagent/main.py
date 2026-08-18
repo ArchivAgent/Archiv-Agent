@@ -1,11 +1,12 @@
 from __future__ import annotations
-import csv, json, os, re, ssl, subprocess, sys, traceback, faulthandler, urllib.parse, urllib.request, xml.etree.ElementTree as ET
+import csv, json, os, re, ssl, subprocess, sys, traceback, faulthandler, urllib.parse, urllib.request, xml.etree.ElementTree as ET, copy
 import certifi
 from pathlib import Path
 from archivagent.image_import import import_image_files
-from PySide6.QtCore import Qt, QThread, QUrl, QObject, Signal, Slot, QRectF, QTimer, QPointF
-from PySide6.QtGui import QAction, QDesktopServices, QFont, QPixmap, QPen, QColor, QTextCursor, QTextCharFormat, QTextDocument, QPainter, QBrush, QPolygonF
-from PySide6.QtWidgets import (QApplication,QCheckBox,QComboBox,QDoubleSpinBox,QFileDialog,QFormLayout,QFrame,QGridLayout,QGroupBox,QHBoxLayout,QLabel,QLineEdit,QListWidget,QMainWindow,QMessageBox,QPlainTextEdit,QTextEdit,QProgressBar,QPushButton,QSpinBox,QSplitter,QStackedWidget,QTableWidget,QTableWidgetItem,QToolBar,QVBoxLayout,QWidget,QGraphicsView,QGraphicsScene,QGraphicsPixmapItem,QGraphicsRectItem,QGraphicsItem,QHeaderView,QMenu,QAbstractSpinBox)
+from archivagent.table_structure import detect_table_structure, draw_structure_overlay, load_structure, rebuild_cells, save_structure, scale_structure, transcription_from_grid, transcription_html_from_grid
+from PySide6.QtCore import Qt, QThread, QUrl, QObject, Signal, Slot, QRectF, QTimer, QPointF, QProcess
+from PySide6.QtGui import QAction, QDesktopServices, QFont, QPixmap, QPen, QColor, QTextCursor, QTextCharFormat, QTextDocument, QPainter, QBrush, QPolygonF, QPainterPathStroker, QTextTable
+from PySide6.QtWidgets import (QApplication,QCheckBox,QComboBox,QDialog,QDoubleSpinBox,QFileDialog,QFormLayout,QFrame,QGridLayout,QGroupBox,QHBoxLayout,QLabel,QLineEdit,QListWidget,QMainWindow,QMessageBox,QPlainTextEdit,QTextEdit,QProgressBar,QPushButton,QSpinBox,QSplitter,QStackedWidget,QTableWidget,QTableWidgetItem,QToolBar,QVBoxLayout,QWidget,QGraphicsView,QGraphicsScene,QGraphicsPixmapItem,QGraphicsRectItem,QGraphicsLineItem,QGraphicsItem,QHeaderView,QMenu,QAbstractSpinBox,QScrollArea,QProgressDialog,QInputDialog)
 
 XLINK='{http://www.w3.org/1999/xlink}href'
 def installed_app_dir():
@@ -123,7 +124,7 @@ class Worker(QObject):
     def run(self):
         try:
             if self.action in ('download','all'):self.download()
-            if not self.cancelled and self.action in ('htr','all'):self.htr()
+            if not self.cancelled and self.action in ('htr','all','read'):self.htr()
             self.finished.emit(not self.cancelled,'Vorgang abgeschlossen.' if not self.cancelled else 'Vorgang abgebrochen.')
         except Exception as e:self.finished.emit(False,str(e))
     def download(self):
@@ -184,6 +185,7 @@ class Worker(QObject):
         cmd=[str(py),'-u',str(script),mode,'--projekt',self.p['project'],'--buch',self.p['book'],'--start',str(start),'--limit',str(len(selected))]
         if self.p.get('names') and '--names' in help_text:
             cmd += ['--names'] + [n.strip() for n in re.split(r'[,;]+', self.p['names']) if n.strip()]
+        if self.p.get('read_only') and '--read-only' in help_text:cmd.append('--read-only')
         if '--schwelle' in help_text:cmd += ['--schwelle',str(self.p['threshold'])]
         if self.p['force'] and '--force' in help_text:cmd.append('--force')
         self.log.emit(f'[MODUS] Backend verwendet {mode}')
@@ -332,7 +334,18 @@ class ScanView(QGraphicsView):
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
         self.save_marker_callback=None;self.reset_marker_callback=None;self.marker_changed_callback=None
+        self.scene_click_callback=None
         self.min_zoom=0.5;self.max_zoom=8.0;self.overview_zoom=0.5
+
+    def show_structure(self,structure):
+        if not structure or not self.pix:return
+        pen_h=QPen(QColor(230,45,45,205));pen_h.setWidth(4)
+        pen_v=QPen(QColor(20,110,230,205));pen_v.setWidth(4)
+        for y in structure.horizontal_lines:
+            start,end=(structure.horizontal_extents or {}).get(str(y),[0,structure.image_width]);item=self.scene.addLine(start,y,end,y,pen_h);item.setZValue(8)
+        for x in structure.vertical_lines:
+            start,end=(structure.vertical_extents or {}).get(str(x),[0,structure.image_height]);item=self.scene.addLine(x,start,x,end,pen_v);item.setZValue(8)
+        self.scene.update();self.viewport().update()
 
     def show_image(self,path,bbox=None):
         self.scene.clear();self.pix=None;self.source_pm=None;self.rect=None;self.rotation=0
@@ -366,6 +379,9 @@ class ScanView(QGraphicsView):
             self.rect.setPos(p.x()-r.width()/2,p.y()-r.height()/2)
             if self.save_marker_callback:self.save_marker_callback()
             event.accept();return
+        if event.button()==Qt.MouseButton.LeftButton and self.scene_click_callback:
+            point=self.mapToScene(event.position().toPoint())
+            self.scene_click_callback(point.x(),point.y())
         super().mousePressEvent(event)
 
     def contextMenuEvent(self,event):
@@ -408,6 +424,453 @@ class ScanView(QGraphicsView):
         if self.pix:self.fitInView(self.pix,Qt.AspectRatioMode.KeepAspectRatio)
     def rotate_right(self):
         if self.pix:self.rotation=(self.rotation+90)%360;self.pix.setRotation(self.rotation);self.scene.setSceneRect(self.scene.itemsBoundingRect());self.fit()
+
+class StructuredTextEdit(QTextEdit):
+    """Zeigt das gespeicherte Seitenraster auch über der Transkription."""
+    def __init__(self,parent=None):
+        super().__init__(parent);self.structure=None
+        self.verticalScrollBar().valueChanged.connect(lambda _value:self.viewport().update())
+        self.horizontalScrollBar().valueChanged.connect(lambda _value:self.viewport().update())
+    def set_structure(self,structure):self.structure=structure;self.viewport().update()
+    def paintEvent(self,event):
+        super().paintEvent(event)
+        if not self.structure:return
+        painter=QPainter(self.viewport());painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        vw=max(1,self.viewport().width());vh=max(1,self.viewport().height())
+        doc_height=max(float(self.document().documentLayout().documentSize().height()),float(vh))
+        y_scroll=self.verticalScrollBar().value();x_scroll=self.horizontalScrollBar().value()
+        painter.setPen(QPen(QColor(230,45,45,155),2))
+        for y in self.structure.horizontal_lines:
+            py=(y/max(1,self.structure.image_height))*doc_height-y_scroll
+            if -2<=py<=vh+2:painter.drawLine(0,round(py),vw,round(py))
+        painter.setPen(QPen(QColor(20,110,230,145),2))
+        content_width=max(float(self.document().idealWidth()),float(vw))
+        for x in self.structure.vertical_lines:
+            px=(x/max(1,self.structure.image_width))*content_width-x_scroll
+            if -2<=px<=vw+2:painter.drawLine(round(px),0,round(px),vh)
+
+class FullPageReader(QDialog):
+    """Gemeinsamer Vollbild-Lesemodus für Trefferseiten und eigene Scans."""
+    def __init__(self,image_path,text_path=None,highlight='',bbox=None,structure_path=None,alto_path=None,parent=None,can_previous=False,can_next=False):
+        super().__init__(parent)
+        self.image_path=Path(image_path);self.raw_text_path=Path(text_path) if text_path else None
+        self.alto_path=Path(alto_path) if alto_path else None;self.structure_path=Path(structure_path) if structure_path else None;self.corrected_path=self._corrected_path();self.name_highlight=str(highlight or '');self.suspicious_visible=False;self.structure=self._load_structure(structure_path);self.navigation_delta=0
+        self.setWindowTitle(f'Ganze Seite lesen — {self.image_path.name}')
+        self.resize(1180,900);self.setMinimumSize(820,640)
+        layout=QVBoxLayout(self)
+        tools=QHBoxLayout()
+        for label,fn in [('Zoom +',lambda:self.image_view.zoom_in()),('Zoom −',lambda:self.image_view.zoom_out()),('Einpassen',lambda:self.image_view.fit()),('90° drehen',lambda:self.image_view.rotate_right())]:
+            button=QPushButton(label);button.clicked.connect(fn);tools.addWidget(button)
+        tools.addSpacing(12);tools.addWidget(QLabel('Markierten Text'))
+        smaller=QPushButton('−');smaller.clicked.connect(lambda:self.change_text_size(-1));tools.addWidget(smaller)
+        larger=QPushButton('+');larger.clicked.connect(lambda:self.change_text_size(1));tools.addWidget(larger)
+        if self.structure_path:
+            raster=QPushButton('Rasterlinien bearbeiten/löschen');raster.clicked.connect(self.edit_raster);tools.addWidget(raster)
+        tools.addStretch()
+        fullscreen=QPushButton('Vollbild');fullscreen.setCheckable(True);fullscreen.toggled.connect(self.toggle_fullscreen);tools.addWidget(fullscreen)
+        layout.addLayout(tools)
+        split=QSplitter(Qt.Orientation.Vertical)
+        image_panel=QWidget();image_layout=QVBoxLayout(image_panel);image_layout.setContentsMargins(0,0,0,0)
+        image_title=QLabel('Original');image_title.setFont(QFont('Segoe UI',11,QFont.Weight.Bold));image_layout.addWidget(image_title)
+        self.image_view=ScanView();self.image_view.show_image(self.image_path,bbox);self.image_view.show_structure(self.structure);self.image_view.scene_click_callback=self.select_original_cell;image_layout.addWidget(self.image_view,1)
+        text_panel=QWidget();text_layout=QVBoxLayout(text_panel);text_layout.setContentsMargins(0,8,0,0)
+        text_title=QLabel('Transkription — Zeilen und Spalten nach dem Original angeordnet');text_title.setFont(QFont('Segoe UI',11,QFont.Weight.Bold));text_layout.addWidget(text_title)
+        self.transcription=StructuredTextEdit();self.transcription_point_size=10;self.transcription.setAcceptRichText(True);self.transcription.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth);self.transcription.set_structure(None)
+        self.transcription.setPlaceholderText('Für dieses Dokument liegt noch keine Transkription vor.')
+        text_layout.addWidget(self.transcription,1)
+        actions=QHBoxLayout()
+        previous=QPushButton('◀ Vorherige Seite');previous.setEnabled(can_previous);previous.clicked.connect(lambda:self.navigate(-1));actions.addWidget(previous)
+        following=QPushButton('Nächste Seite ▶');following.setEnabled(can_next);following.clicked.connect(lambda:self.navigate(1));actions.addWidget(following)
+        actions.addSpacing(12)
+        copy_button=QPushButton('Text kopieren');copy_button.clicked.connect(self.copy_text);actions.addWidget(copy_button)
+        suspicious=QPushButton('Verdächtige Zeichen markieren');suspicious.setCheckable(True);suspicious.toggled.connect(self.highlight_suspicious);actions.addWidget(suspicious)
+        save_button=QPushButton('Korrektur speichern');save_button.setObjectName('primary');save_button.clicked.connect(self.save_correction);actions.addWidget(save_button)
+        export_button=QPushButton('Als TXT speichern');export_button.clicked.connect(self.export_text);actions.addWidget(export_button)
+        actions.addStretch();close_button=QPushButton('Schließen');close_button.clicked.connect(self.accept);actions.addWidget(close_button);text_layout.addLayout(actions)
+        split.addWidget(image_panel);split.addWidget(text_panel);split.setStretchFactor(0,3);split.setStretchFactor(1,2);split.setSizes([540,320]);layout.addWidget(split,1)
+        self.load_text(highlight)
+        if bbox and self.structure:QTimer.singleShot(0,lambda:self.select_hit_cell(highlight,bbox))
+        QTimer.singleShot(0,self.image_view.fit)
+
+    def navigate(self,delta):
+        self.navigation_delta=int(delta);self.accept()
+
+    def change_text_size(self,steps):
+        cursor=self.transcription.textCursor()
+        if not cursor.hasSelection():cursor.select(QTextCursor.SelectionType.WordUnderCursor)
+        if not cursor.hasSelection():
+            QMessageBox.information(self,'Textgröße','Bitte zuerst ein Wort oder einen Textabschnitt markieren.');return
+        current=cursor.charFormat().fontPointSize() or self.transcription.font().pointSizeF() or 10
+        fmt=QTextCharFormat();fmt.setFontPointSize(max(6,min(28,current+int(steps))));cursor.mergeCharFormat(fmt)
+        self.transcription.setTextCursor(cursor)
+
+    def edit_raster(self):
+        old_structure=copy.deepcopy(self.structure)
+        old_cells=self.table_cell_texts()
+        dialog=TableStructureDialog(self.image_path,None,self.structure,self.structure_path,self)
+        if dialog.exec()==QDialog.DialogCode.Accepted:
+            self.structure=load_structure(self.structure_path);self.image_view.show_image(self.image_path);self.image_view.show_structure(self.structure);self.image_view.scene_click_callback=self.select_original_cell
+            self.rebuild_transcription_preserving_corrections(old_structure,old_cells)
+            QMessageBox.information(self,'Raster übernommen','Die geänderten Linien wurden gespeichert und direkt auf die Transkription angewendet. Vorhandene Korrekturen wurden positionsbezogen übernommen.')
+
+    def table_cell_texts(self):
+        table=next((frame for frame in self.transcription.document().rootFrame().childFrames() if isinstance(frame,QTextTable)),None)
+        if table is None:return []
+        result=[]
+        for row in range(table.rows()):
+            current=[]
+            for column in range(table.columns()):
+                cell=table.cellAt(row,column);cursor=cell.firstCursorPosition();cursor.setPosition(cell.lastCursorPosition().position(),QTextCursor.MoveMode.KeepAnchor)
+                current.append(cursor.selectedText().replace('\u2029','\n').strip())
+            result.append(current)
+        return result
+
+    def rebuild_transcription_preserving_corrections(self,old_structure,old_cells):
+        if self.alto_path and self.alto_path.exists():self.transcription.setHtml(transcription_html_from_grid(self.alto_path,self.structure))
+        table=next((frame for frame in self.transcription.document().rootFrame().childFrames() if isinstance(frame,QTextTable)),None)
+        if table is None or not old_structure:return
+        mapped={}
+        for old_row,row_values in enumerate(old_cells):
+            if old_row>=len(old_structure.horizontal_lines)-1:continue
+            cy=sum(old_structure.horizontal_lines[old_row:old_row+2])/2
+            new_row=next((i for i,(a,b) in enumerate(zip(self.structure.horizontal_lines,self.structure.horizontal_lines[1:])) if a<=cy<b),None)
+            if new_row is None or new_row>=table.rows():continue
+            for old_column,value in enumerate(row_values):
+                if not value or old_column>=len(old_structure.vertical_lines)-1:continue
+                cx=sum(old_structure.vertical_lines[old_column:old_column+2])/2
+                new_column=next((i for i,(a,b) in enumerate(zip(self.structure.vertical_lines,self.structure.vertical_lines[1:])) if a<=cx<b),None)
+                if new_column is None or new_column>=table.columns():continue
+                mapped.setdefault((new_row,new_column),[]).append(value)
+        for (new_row,new_column),values in mapped.items():
+            cell=table.cellAt(new_row,new_column);cursor=cell.firstCursorPosition();cursor.setPosition(cell.lastCursorPosition().position(),QTextCursor.MoveMode.KeepAnchor);cursor.insertText('\n'.join(values))
+        self.save_correction(silent=True)
+
+    def _load_structure(self,path):
+        if not path:return None
+        try:
+            data=json.loads(Path(path).read_text(encoding='utf-8'))
+            from archivagent.table_structure import TableStructure
+            return rebuild_cells(TableStructure(**data))
+        except Exception:return None
+
+    def _corrected_path(self):
+        if not self.raw_text_path:return None
+        folder=self.raw_text_path.parent.parent/'Korrekturen' if self.raw_text_path.parent.name.casefold() in {'texte','layout'} else self.raw_text_path.parent/'Korrekturen'
+        return folder/self.raw_text_path.name
+
+    def _corrected_html_path(self):
+        return self.corrected_path.with_suffix('.html') if self.corrected_path else None
+
+    def _training_pair_path(self):
+        return self.corrected_path.with_suffix('.training.json') if self.corrected_path else None
+
+    def _training_alto_path(self):
+        return self.corrected_path.with_suffix('.groundtruth.xml') if self.corrected_path else None
+
+    def save_training_alto(self):
+        """Schreibt echte zeilenbezogene Ground-Truth im von Kraken lesbaren ALTO-Format."""
+        if not self.structure or not self._training_alto_path():return None
+        table=next((frame for frame in self.transcription.document().rootFrame().childFrames() if isinstance(frame,QTextTable)),None)
+        if table is None:return None
+        root=ET.Element('alto',{'xmlns':'http://www.loc.gov/standards/alto/ns-v4#'})
+        description=ET.SubElement(root,'Description');ET.SubElement(description,'MeasurementUnit').text='pixel'
+        source=ET.SubElement(description,'sourceImageInformation');ET.SubElement(source,'fileName').text=str(self.image_path.resolve())
+        layout=ET.SubElement(root,'Layout');page=ET.SubElement(layout,'Page',{'WIDTH':str(self.structure.image_width),'HEIGHT':str(self.structure.image_height)})
+        space=ET.SubElement(page,'PrintSpace',{'HPOS':'0','VPOS':'0','WIDTH':str(self.structure.image_width),'HEIGHT':str(self.structure.image_height)})
+        block=ET.SubElement(space,'TextBlock',{'ID':'corrected_table'})
+        line_id=0
+        for row in range(min(table.rows(),len(self.structure.horizontal_lines)-1)):
+            top,bottom=self.structure.horizontal_lines[row:row+2]
+            for column in range(min(table.columns(),len(self.structure.vertical_lines)-1)):
+                left,right=self.structure.vertical_lines[column:column+2];cell=table.cellAt(row,column)
+                cursor=cell.firstCursorPosition();cursor.setPosition(cell.lastCursorPosition().position(),QTextCursor.MoveMode.KeepAnchor)
+                values=[value.strip() for value in cursor.selectedText().replace('\u2029','\n').splitlines() if value.strip()]
+                if not values:continue
+                line_height=max(1,(bottom-top)//len(values))
+                for index,value in enumerate(values):
+                    y=top+index*line_height;line_id+=1
+                    line=ET.SubElement(block,'TextLine',{'ID':f'line_{line_id}','HPOS':str(left),'VPOS':str(y),'WIDTH':str(max(1,right-left)),'HEIGHT':str(line_height)})
+                    ET.SubElement(line,'String',{'ID':f'string_{line_id}','CONTENT':value,'HPOS':str(left),'VPOS':str(y),'WIDTH':str(max(1,right-left)),'HEIGHT':str(line_height)})
+        if not line_id:return None
+        path=self._training_alto_path();ET.ElementTree(root).write(path,encoding='utf-8',xml_declaration=True);return path
+
+    def load_text(self,highlight=''):
+        corrected_html=self._corrected_html_path()
+        source=self.corrected_path if self.corrected_path and self.corrected_path.exists() else self.raw_text_path
+        if corrected_html and corrected_html.exists():
+            self.transcription.setHtml(corrected_html.read_text(encoding='utf-8'))
+        elif (not self.corrected_path or not self.corrected_path.exists()) and self.structure and self.alto_path and self.alto_path.exists():
+            try:self.transcription.setHtml(transcription_html_from_grid(self.alto_path,self.structure))
+            except Exception:
+                if source and source.exists():self.transcription.setPlainText(source.read_text(encoding='utf-8-sig',errors='replace'))
+        elif source and source.exists():
+            self.transcription.setPlainText(source.read_text(encoding='utf-8-sig',errors='replace'))
+        if highlight:
+            cursor=self.transcription.document().find(str(highlight))
+            if not cursor.isNull():
+                fmt=QTextCharFormat();fmt.setBackground(QColor('#ffd54f'));fmt.setForeground(QColor('#111111'))
+                extra=QTextEdit.ExtraSelection();extra.cursor=cursor;extra.format=fmt;self.transcription.setExtraSelections([extra]);self.transcription.setTextCursor(cursor);self.transcription.ensureCursorVisible()
+
+    def select_original_cell(self,x,y):
+        """Markiert nach einem Klick ins Original die zugehörige Rasterzelle im Text."""
+        if not self.structure:return
+        vertical=self.structure.vertical_lines;horizontal=self.structure.horizontal_lines
+        row=next((i for i,(top,bottom) in enumerate(zip(horizontal,horizontal[1:])) if top<=y<bottom),None)
+        column=next((i for i,(left,right) in enumerate(zip(vertical,vertical[1:])) if left<=x<right),None)
+        if row is None or column is None:return
+        table=next((frame for frame in self.transcription.document().rootFrame().childFrames() if isinstance(frame,QTextTable)),None)
+        if table is None or row>=table.rows() or column>=table.columns():return
+        cell=table.cellAt(row,column);cursor=cell.firstCursorPosition();cursor.setPosition(cell.lastCursorPosition().position(),QTextCursor.MoveMode.KeepAnchor)
+        fmt=QTextCharFormat();fmt.setBackground(QColor('#80deea'));fmt.setForeground(QColor('#111111'))
+        extra=QTextEdit.ExtraSelection();extra.cursor=cursor;extra.format=fmt
+        self.transcription.setExtraSelections([extra]);self.transcription.setTextCursor(cursor);self.transcription.ensureCursorVisible()
+
+    def select_hit_cell(self,name,bbox):
+        """Sucht den Treffer nur in der durch die Bildmarkierung bestimmten Tabellenzeile."""
+        if not self.structure:return
+        _x,y,_w,h=bbox;center_y=y+h/2
+        row=next((i for i,(top,bottom) in enumerate(zip(self.structure.horizontal_lines,self.structure.horizontal_lines[1:])) if top<=center_y<bottom),None)
+        table=next((frame for frame in self.transcription.document().rootFrame().childFrames() if isinstance(frame,QTextTable)),None)
+        if row is None or table is None or row>=table.rows():return
+        wanted=str(name or '').casefold();matches=[]
+        for column in range(table.columns()):
+            cell=table.cellAt(row,column);cursor=cell.firstCursorPosition();cursor.setPosition(cell.lastCursorPosition().position(),QTextCursor.MoveMode.KeepAnchor)
+            if wanted and wanted in cursor.selectedText().casefold():matches.append((column,cursor))
+        if matches:
+            column,cursor=matches[0];left,right=self.structure.vertical_lines[column:column+2]
+            self.select_original_cell((left+right)/2,center_y)
+
+    def highlight_suspicious(self,enabled):
+        """Markiert Wörter mit gemischten Buchstaben/Ziffern, ohne sie zu verändern."""
+        self.suspicious_visible=bool(enabled);document=self.transcription.document();selections=[]
+        if self.name_highlight:
+            cursor=document.find(self.name_highlight)
+            if not cursor.isNull():
+                fmt=QTextCharFormat();fmt.setBackground(QColor('#ffd54f'));fmt.setForeground(QColor('#111111'))
+                extra=QTextEdit.ExtraSelection();extra.cursor=cursor;extra.format=fmt;selections.append(extra)
+        if enabled:
+            pattern=re.compile(r'(?iu)\b(?=[\wÄÖÜäöüßſ]*[A-Za-zÄÖÜäöüßſ])(?=[\wÄÖÜäöüßſ]*\d)[\wÄÖÜäöüßſ]+\b')
+            text=self.transcription.toPlainText()
+            for match in pattern.finditer(text):
+                cursor=QTextCursor(document);cursor.setPosition(match.start());cursor.setPosition(match.end(),QTextCursor.MoveMode.KeepAnchor)
+                fmt=QTextCharFormat();fmt.setBackground(QColor('#ffcdd2'));fmt.setUnderlineStyle(QTextCharFormat.UnderlineStyle.WaveUnderline);fmt.setUnderlineColor(QColor('#c62828'))
+                extra=QTextEdit.ExtraSelection();extra.cursor=cursor;extra.format=fmt;selections.append(extra)
+            self.setWindowTitle(f'Ganze Seite lesen — {self.image_path.name} — {max(0,len(selections)-(1 if self.name_highlight else 0))} verdächtige Stelle(n)')
+        else:self.setWindowTitle(f'Ganze Seite lesen — {self.image_path.name}')
+        self.transcription.setExtraSelections(selections)
+
+    def toggle_fullscreen(self,enabled):
+        self.showFullScreen() if enabled else self.showNormal()
+
+    def copy_text(self):
+        QApplication.clipboard().setText(self.transcription.toPlainText());self.parent().statusBar().showMessage('Transkription kopiert.',2500) if isinstance(self.parent(),QMainWindow) else None
+
+    def save_correction(self,silent=False):
+        if not self.corrected_path:
+            self.export_text();return
+        try:
+            self.corrected_path.parent.mkdir(parents=True,exist_ok=True)
+            self.corrected_path.write_text(self.transcription.toPlainText(),encoding='utf-8')
+            html_path=self._corrected_html_path();html_path.write_text(self.transcription.toHtml(),encoding='utf-8')
+            raw=self.raw_text_path.read_text(encoding='utf-8-sig',errors='replace') if self.raw_text_path and self.raw_text_path.exists() else ''
+            pair={'image':str(self.image_path),'alto':str(self.alto_path or ''),'ocr_text':raw,'corrected_text':self.transcription.toPlainText(),'status':'gesammelt_nicht_trainiert'}
+            self._training_pair_path().write_text(json.dumps(pair,ensure_ascii=False,indent=2),encoding='utf-8')
+            training_alto=self.save_training_alto()
+            if not silent:QMessageBox.information(self,'Transkription gespeichert',f'Die korrigierte Tabelle wurde dauerhaft gespeichert:\n{html_path}\n\n'+('Kraken-Ground-Truth wurde für das Modelltraining angelegt.' if training_alto else 'Für diese Seite konnte noch keine zeilenbezogene Ground-Truth angelegt werden.'))
+        except Exception as exc:QMessageBox.critical(self,'Speichern fehlgeschlagen',str(exc))
+
+    def export_text(self):
+        suggested=self.image_path.with_suffix('.txt').name
+        path,_=QFileDialog.getSaveFileName(self,'Transkription als TXT speichern',suggested,'Textdateien (*.txt)')
+        if not path:return
+        try:Path(path).write_text(self.transcription.toPlainText(),encoding='utf-8')
+        except Exception as exc:QMessageBox.critical(self,'Speichern fehlgeschlagen',str(exc))
+
+class DraggableSeparator(QGraphicsLineItem):
+    """Eine ausschließlich horizontal oder vertikal verschiebbare Rasterlinie."""
+    def __init__(self,orientation,position,width,height,changed_callback=None,start=None,end=None):
+        super().__init__();self.orientation=orientation;self.changed_callback=changed_callback
+        self.limit=height if orientation=='h' else width;self.length_limit=width if orientation=='h' else height
+        self.start=0 if start is None else start;self.end=self.length_limit if end is None else end
+        self.update_line()
+        self.setPos(0,position) if orientation=='h' else self.setPos(position,0)
+        self.setPen(QPen(QColor('#e62d2d' if orientation=='h' else '#146ee6'),4))
+        self.setZValue(20);self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable,True)
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable,True)
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemSendsGeometryChanges,True)
+        self.setCursor(Qt.CursorShape.SizeVerCursor if orientation=='h' else Qt.CursorShape.SizeHorCursor)
+    def shape(self):
+        stroker=QPainterPathStroker();stroker.setWidth(18);return stroker.createStroke(super().shape())
+    def paint(self,painter,option,widget=None):
+        pen=QPen(QColor('#ff8a00') if self.isSelected() else QColor('#e62d2d' if self.orientation=='h' else '#146ee6'),7 if self.isSelected() else 4)
+        painter.setPen(pen);painter.drawLine(self.line())
+    def itemChange(self,change,value):
+        if change==QGraphicsItem.GraphicsItemChange.ItemPositionChange:
+            return QPointF(0,max(0,min(self.limit,value.y()))) if self.orientation=='h' else QPointF(max(0,min(self.limit,value.x())),0)
+        result=super().itemChange(change,value)
+        if change==QGraphicsItem.GraphicsItemChange.ItemPositionHasChanged and self.changed_callback:self.changed_callback()
+        return result
+    def coordinate(self):return round(self.pos().y() if self.orientation=='h' else self.pos().x())
+    def update_line(self):
+        self.start=max(0,min(self.length_limit,round(self.start)));self.end=max(self.start+1,min(self.length_limit,round(self.end)))
+        self.setLine(self.start,0,self.end,0) if self.orientation=='h' else self.setLine(0,self.start,0,self.end)
+    def set_endpoint(self,which,value):
+        if which=='start':self.start=min(value,self.end-1)
+        else:self.end=max(value,self.start+1)
+        self.update_line()
+
+class TableEditView(ScanView):
+    def __init__(self,image_path,structure,changed_callback=None):
+        super().__init__();self.structure=structure;self.changed_callback=changed_callback;self.add_orientation=None;self.extent_mode=None;self.separators=[];self.dragging_separator=None;self.dragging_endpoint=None
+        self.show_image(image_path);self.reload_lines()
+    def reload_lines(self):
+        for item in self.separators:self.scene.removeItem(item)
+        self.separators=[]
+        for orientation,positions in (('h',self.structure.horizontal_lines),('v',self.structure.vertical_lines)):
+            for position in positions:
+                extents=(self.structure.horizontal_extents if orientation=='h' else self.structure.vertical_extents) or {}
+                start,end=extents.get(str(position),[0,self.structure.image_width if orientation=='h' else self.structure.image_height])
+                item=DraggableSeparator(orientation,position,self.structure.image_width,self.structure.image_height,self.changed_callback,start,end)
+                self.scene.addItem(item);self.separators.append(item)
+        self.scene.update();self.viewport().update()
+    def begin_add(self,orientation):
+        self.add_orientation=orientation;self.setDragMode(QGraphicsView.DragMode.NoDrag)
+        self.setCursor(Qt.CursorShape.CrossCursor)
+    def begin_extent(self,which):
+        if not any(item.isSelected() for item in self.separators):return False
+        self.extent_mode=which;self.setDragMode(QGraphicsView.DragMode.NoDrag);self.setCursor(Qt.CursorShape.CrossCursor);return True
+    def mousePressEvent(self,event):
+        if self.extent_mode and event.button()==Qt.MouseButton.LeftButton:
+            selected=next((item for item in self.separators if item.isSelected()),None);point=self.mapToScene(event.position().toPoint())
+            if selected:selected.set_endpoint(self.extent_mode,point.x() if selected.orientation=='h' else point.y())
+            self.extent_mode=None;self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag);self.unsetCursor();self.apply_to_structure()
+            if self.changed_callback:self.changed_callback()
+            event.accept();return
+        if self.add_orientation and event.button()==Qt.MouseButton.LeftButton:
+            point=self.mapToScene(event.position().toPoint());position=point.y() if self.add_orientation=='h' else point.x()
+            item=DraggableSeparator(self.add_orientation,position,self.structure.image_width,self.structure.image_height,self.changed_callback)
+            self.scene.addItem(item);self.separators.append(item);self.add_orientation=None
+            self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag);self.unsetCursor()
+            if self.changed_callback:self.changed_callback()
+            event.accept();return
+        if event.button()==Qt.MouseButton.LeftButton:
+            point=self.mapToScene(event.position().toPoint())
+            scale=max(abs(self.transform().m11()),abs(self.transform().m22()),0.01)
+            tolerance=12.0/scale
+            candidates=[]
+            for item in self.separators:
+                distance=abs(point.y()-item.coordinate()) if item.orientation=='h' else abs(point.x()-item.coordinate())
+                if distance<=tolerance:candidates.append((distance,item))
+            if candidates:
+                chosen=min(candidates,key=lambda candidate:candidate[0])[1]
+                self.scene.clearSelection();chosen.setSelected(True);self.setFocus()
+                axis=point.x() if chosen.orientation=='h' else point.y()
+                endpoint_tolerance=16.0/scale
+                if abs(axis-chosen.start)<=endpoint_tolerance:self.dragging_endpoint=(chosen,'start')
+                elif abs(axis-chosen.end)<=endpoint_tolerance:self.dragging_endpoint=(chosen,'end')
+                else:self.dragging_separator=chosen
+                self.setDragMode(QGraphicsView.DragMode.NoDrag)
+                event.accept();return
+        super().mousePressEvent(event)
+    def mouseMoveEvent(self,event):
+        if self.dragging_endpoint is not None:
+            item,which=self.dragging_endpoint;point=self.mapToScene(event.position().toPoint())
+            item.set_endpoint(which,point.x() if item.orientation=='h' else point.y())
+            if self.changed_callback:self.changed_callback()
+            event.accept();return
+        if self.dragging_separator is not None:
+            point=self.mapToScene(event.position().toPoint());item=self.dragging_separator
+            if item.orientation=='h':item.setPos(0,max(0,min(item.limit,point.y())))
+            else:item.setPos(max(0,min(item.limit,point.x())),0)
+            if self.changed_callback:self.changed_callback()
+            event.accept();return
+        super().mouseMoveEvent(event)
+    def mouseReleaseEvent(self,event):
+        if self.dragging_endpoint is not None:
+            self.dragging_endpoint=None;self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag);self.apply_to_structure()
+            if self.changed_callback:self.changed_callback()
+            event.accept();return
+        if self.dragging_separator is not None:
+            self.dragging_separator=None;self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag);self.apply_to_structure()
+            if self.changed_callback:self.changed_callback()
+            event.accept();return
+        super().mouseReleaseEvent(event)
+    def contextMenuEvent(self,event):
+        point=self.mapToScene(event.pos());scale=max(abs(self.transform().m11()),abs(self.transform().m22()),0.01);tolerance=12.0/scale
+        horizontal=next((item for item in self.separators if item.orientation=='h' and abs(point.y()-item.coordinate())<=tolerance),None)
+        vertical=next((item for item in self.separators if item.orientation=='v' and abs(point.x()-item.coordinate())<=tolerance),None)
+        menu=QMenu(self)
+        add_row=menu.addAction('Zeile hinzufügen')
+        remove_row=menu.addAction('Zeile entfernen');remove_row.setEnabled(horizontal is not None)
+        menu.addSeparator()
+        add_column=menu.addAction('Spalte hinzufügen')
+        remove_column=menu.addAction('Spalte entfernen');remove_column.setEnabled(vertical is not None)
+        chosen=menu.exec(event.globalPos())
+        if chosen==add_row:self.add_separator_at('h',point.y())
+        elif chosen==remove_row:self.remove_separator(horizontal)
+        elif chosen==add_column:self.add_separator_at('v',point.x())
+        elif chosen==remove_column:self.remove_separator(vertical)
+    def add_separator_at(self,orientation,position):
+        item=DraggableSeparator(orientation,position,self.structure.image_width,self.structure.image_height,self.changed_callback)
+        self.scene.addItem(item);self.separators.append(item);self.apply_to_structure()
+        if self.changed_callback:self.changed_callback()
+    def remove_separator(self,item):
+        if item is None:return
+        self.scene.removeItem(item);self.separators.remove(item);self.apply_to_structure()
+        if self.changed_callback:self.changed_callback()
+    def delete_selected(self):
+        selected=[item for item in self.separators if item.isSelected()]
+        for item in selected:self.scene.removeItem(item);self.separators.remove(item)
+        if selected:
+            self.apply_to_structure()
+            if self.changed_callback:self.changed_callback()
+    def keyPressEvent(self,event):
+        if event.key() in (Qt.Key.Key_Delete,Qt.Key.Key_Backspace):self.delete_selected();event.accept();return
+        super().keyPressEvent(event)
+    def apply_to_structure(self):
+        self.structure.horizontal_lines=[item.coordinate() for item in self.separators if item.orientation=='h']
+        self.structure.vertical_lines=[item.coordinate() for item in self.separators if item.orientation=='v']
+        self.structure.horizontal_extents={str(item.coordinate()):[item.start,item.end] for item in self.separators if item.orientation=='h'}
+        self.structure.vertical_extents={str(item.coordinate()):[item.start,item.end] for item in self.separators if item.orientation=='v'}
+        return rebuild_cells(self.structure)
+
+class TableStructureDialog(QDialog):
+    def __init__(self,image_path,overlay_path,structure,json_path=None,parent=None):
+        super().__init__(parent);self.structure=structure;self.json_path=Path(json_path) if json_path else None;self.image_path=Path(image_path)
+        self.setWindowTitle(f'Tabellenstruktur bearbeiten — {Path(image_path).name}');self.resize(1180,850);self.setMinimumSize(760,560)
+        layout=QVBoxLayout(self)
+        self.info=QLabel();self.info.setWordWrap(True);layout.addWidget(self.info)
+        tools=QHBoxLayout()
+        redetect=QPushButton('Raster neu erkennen');redetect.setToolTip('Verwirft nur die aktuelle Rasteranzeige und erkennt die Linien dieser Seite erneut.');redetect.clicked.connect(self.redetect);tools.addWidget(redetect)
+        add_row=QPushButton('Neue Zeilengrenze');add_row.clicked.connect(lambda:self.start_add('h'));tools.addWidget(add_row)
+        add_column=QPushButton('Neue Spaltengrenze');add_column.clicked.connect(lambda:self.start_add('v'));tools.addWidget(add_column)
+        delete=QPushButton('Ausgewählte Linie löschen');delete.setToolTip('Waagerechte oder senkrechte Linie anklicken und dann löschen. Entf-Taste funktioniert ebenfalls.');delete.clicked.connect(self.delete_selected);tools.addWidget(delete);tools.addStretch();layout.addLayout(tools)
+        extents=QHBoxLayout();extents.addWidget(QLabel('Linienlänge:'))
+        start=QPushButton('Anfang im Bild setzen');start.clicked.connect(lambda:self.start_extent('start'));extents.addWidget(start)
+        end=QPushButton('Ende im Bild setzen');end.clicked.connect(lambda:self.start_extent('end'));extents.addWidget(end);extents.addStretch();layout.addLayout(extents)
+        self.view=TableEditView(image_path,structure,self.update_info);layout.addWidget(self.view,1)
+        row=QHBoxLayout();row.addStretch();cancel=QPushButton('Abbrechen');cancel.clicked.connect(self.reject);row.addWidget(cancel)
+        save=QPushButton('Raster speichern');save.setObjectName('primary');save.clicked.connect(self.save);row.addWidget(save);layout.addLayout(row)
+        self.update_info()
+        QTimer.singleShot(0,self.view.fit)
+    def update_info(self):
+        structure=self.view.apply_to_structure() if hasattr(self,'view') else self.structure
+        self.info.setText(f'Rot = Zeilengrenzen, Blau = Spaltengrenzen. Linie mittig mit links verschieben; Linienende mit links ziehen, um die Länge zu ändern. Rechtsklick: Zeile oder Spalte hinzufügen/entfernen. '
+                          f'Aktuell: {len(structure.horizontal_lines)} Zeilengrenzen, {len(structure.vertical_lines)} Spaltengrenzen, {len(structure.cells)} Zellen.')
+    def redetect(self):
+        fresh=detect_table_structure(self.image_path);self.structure=fresh;self.view.structure=fresh;self.view.reload_lines();self.view.fit();self.update_info()
+        if len(fresh.horizontal_lines)<2 or len(fresh.vertical_lines)<2:
+            QMessageBox.warning(self,'Raster neu erkennen','Auch bei der neuen Erkennung wurde kein vollständiges Raster gefunden. Linien können mit Rechtsklick oder den Schaltflächen manuell hinzugefügt werden.')
+    def start_add(self,orientation):
+        self.view.begin_add(orientation);self.info.setText(('Bitte jetzt an der gewünschten Höhe' if orientation=='h' else 'Bitte jetzt an der gewünschten Spaltenposition')+' in das Original klicken.')
+    def delete_selected(self):self.view.delete_selected()
+    def start_extent(self,which):
+        if not self.view.begin_extent(which):QMessageBox.information(self,'Linienlänge','Bitte zuerst eine rote oder blaue Linie anklicken.')
+        else:self.info.setText('Jetzt an die gewünschte Position für '+('den Linienanfang' if which=='start' else 'das Linienende')+' klicken.')
+    def save(self):
+        structure=self.view.apply_to_structure()
+        if self.json_path:save_structure(structure,self.json_path)
+        self.accept()
 
 class ReadingArchivist(QWidget):
     """Kleine, vollständig lokal gezeichnete Leseanimation."""
@@ -458,21 +921,35 @@ class ReadingArchivist(QWidget):
 
 class Main(QMainWindow):
     def __init__(self):
-        super().__init__();self.setWindowTitle('ArchivAgent 7.0 RC2');self.resize(1220,800);self.setMinimumSize(980,680);self.thread=None;self.worker=None;self.pending_result=None;self.current_image_index=-1;self.current_images=[];self.current_hit=None;self.current_auto_bbox=None;self.current_position_key=None;self.all_hit_rows=[];self.hit_ratings={};self.last_rating_action=None
+        # RC9: aufgeräumte Navigation und dokumentbezogene Werkzeuge.
+        super().__init__();self.setWindowTitle('ArchivAgent 7.1 RC19');self.resize(1220,800);self.setMinimumSize(980,680);self.thread=None;self.worker=None;self.pending_result=None;self.pending_full_read=None;self.last_imported_image=None;self.current_image_index=-1;self.current_images=[];self.current_hit=None;self.current_auto_bbox=None;self.current_position_key=None;self.all_hit_rows=[];self.hit_ratings={};self.last_rating_action=None
         self.base=QLineEdit(BASE_DEFAULT);self.project=QComboBox();self.project.setEditable(True);self.book=QComboBox();self.book.setEditable(True);self.url=QLineEdit();self.names=QLineEdit();self.start=QSpinBox();self.start.setRange(1,999999);self.start.setValue(1);self.start.setSingleStep(1);self.start.setAccelerated(True);self.start.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons);self.end=QSpinBox();self.end.setRange(0,999999);self.end.setValue(0);self.end.setSingleStep(1);self.end.setAccelerated(True);self.end.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons);self.threshold=QDoubleSpinBox();self.threshold.setRange(.5,1);self.threshold.setValue(.72);self.threshold.setSingleStep(.01);self.threshold.setDecimals(2);self.threshold.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons);self.force=QCheckBox('Vorhandene Texterkennung erneut ausführen');self.log=QPlainTextEdit();self.log.setReadOnly(True);self.progress=QProgressBar();self.stats={};self.hit_rows=[];self.table=QTableWidget(0,7);self.table.setHorizontalHeaderLabels(['Status','Name','Buch','Seite','Übereinstimmung','Textumgebung','Quelle']);self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows);self.scan_view=ScanView();self.scan_view.save_marker_callback=self.save_current_marker;self.scan_view.reset_marker_callback=self.reset_current_marker;self.scan_view.marker_changed_callback=self.marker_moved;self.scan_title=QLabel('Kein Treffer ausgewählt');self.scan_title.setWordWrap(True);self.page_label=QLabel('Seite – / –');self.ocr_title=QLabel('Erkannter Text');self.ocr_title.setFont(QFont('Segoe UI',11,QFont.Weight.Bold));self.ocr_text=QTextEdit();self.ocr_text.setReadOnly(True);self.ocr_text.setPlaceholderText('Zu diesem Treffer wurde noch kein erkannter Text gefunden.');self.ocr_text.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth);self.book_table=QTableWidget(0,5);self.book_table.setHorizontalHeaderLabels(['Buch','Seiten','Heruntergeladen','Text erkannt','Treffer']);self.book_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.nav=QListWidget();self.nav.addItems(['Buch durchsuchen','Bücher','Treffer prüfen','Übersicht','Statistik','Einstellungen']);self.nav.setFixedWidth(220);self.stack=QStackedWidget()
-        for w in [self.search_page(),self.books_page(),self.hits_page(),self.dashboard(),self.statistics_page(),self.settings_page()]:self.stack.addWidget(w)
-        self.nav.currentRowChanged.connect(self.stack.setCurrentIndex);self.nav.currentRowChanged.connect(lambda _:self.refresh())
+        self.setWindowTitle('ArchivAgent 7.1 RC19')
+        self.nav=QListWidget();self.nav.addItems(['Buch durchsuchen','Bücher','Treffer prüfen','Einstellungen','Info']);self.nav.setFixedWidth(220);self.stack=QStackedWidget()
+        for w in [self.search_page(),self.books_page(),self.hits_page(),self.settings_page(),self.info_page()]:self.stack.addWidget(w)
+        self.nav.currentRowChanged.connect(self.stack.setCurrentIndex);self.nav.currentRowChanged.connect(self.navigation_changed)
         sp=QSplitter();sp.addWidget(self.nav);sp.addWidget(self.stack);sp.setStretchFactor(1,1);self.setCentralWidget(sp);self.toolbar();self.style();self.refresh();self.nav.setCurrentRow(0)
     def head(self,t,s):
         w=QWidget();l=QVBoxLayout(w);h=QLabel(t);h.setFont(QFont('Segoe UI',22,QFont.Weight.Bold));x=QLabel(s);x.setWordWrap(True);l.addWidget(h);l.addWidget(x);return w
+    def navigation_changed(self,row):
+        self.refresh()
+        if row==2 and self.hit_rows:
+            self.table.selectRow(0);QTimer.singleShot(0,lambda:self.open_selected_hit_page(0,0))
     def select_box(self):
         g=QGroupBox('Auswahl');f=QFormLayout(g);f.addRow('Projekt',self.project);f.addRow('Buch',self.book);self.project.currentTextChanged.connect(self.refresh_books);return g
     def dashboard(self):
-        w=QWidget();l=QVBoxLayout(w);l.addWidget(self.head('ArchivAgent 7.0 RC2','Online-Archive und eigene Scans lesen, nach Familiennamen suchen und Ergebnisse prüfen.'));g=QGridLayout()
+        w=QWidget();l=QVBoxLayout(w);l.addWidget(self.head('ArchivAgent 7.1 RC19','Online-Archive und eigene Scans lesen, nach Familiennamen suchen und Ergebnisse prüfen.'));g=QGridLayout()
         for i,k in enumerate(['Projekte','Bücher','Scans','Treffer']):
             c=QFrame();c.setObjectName('card');cl=QVBoxLayout(c);a=QLabel(k);a.setFont(QFont('Segoe UI',12,QFont.Weight.Bold));v=QLabel('0');v.setFont(QFont('Segoe UI',25,QFont.Weight.Bold));self.stats[k]=v;cl.addWidget(a);cl.addWidget(v);g.addWidget(c,i//2,i%2)
         l.addLayout(g);l.addStretch();return w
+    def info_page(self):
+        w=QWidget();l=QVBoxLayout(w);l.addWidget(self.head('Info','Informationen zu ArchivAgent.'))
+        info=QLabel('<b>ArchivAgent</b><br><br>Version: 7.1 RC19<br>Release: August 2026<br><br>'
+                    'Programmierer: Frank Bernbeck<br><br>'
+                    'Werkzeug zum Durchsuchen, Lesen und Korrigieren historischer Handschriften.<br><br>'
+                    'Lizenz: GPL-3.0<br>Handschriftenmodell: Stefan Weil, CC BY-SA 4.0')
+        info.setWordWrap(True);info.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        l.addWidget(info);l.addStretch();return w
     def search_page(self):
         w=QWidget();l=QVBoxLayout(w)
         l.addWidget(self.head('Buch durchsuchen','Buchseiten herunterladen, Schrift erkennen und nach Familiennamen durchsuchen.'))
@@ -480,7 +957,7 @@ class Main(QMainWindow):
         f.addRow('Projekt',self.project)
         f.addRow('Buch',self.book)
         self.project.currentTextChanged.connect(self.refresh_books)
-        f.addRow('Familienname(n)',self.names)
+        f.addRow('Suchbegriffe / Namen',self.names)
         f.addRow('Suchgenauigkeit',self.threshold_spin_controls())
         accuracy_hint=QLabel('Empfehlung: 0,85. Höher = weniger falsche Treffer; niedriger = empfindlichere Suche.');accuracy_hint.setWordWrap(True);f.addRow('',accuracy_hint)
         lr=QHBoxLayout();lr.addWidget(self.url)
@@ -496,17 +973,26 @@ class Main(QMainWindow):
         f.addRow('Seitenbereich',sr)
         page_hint=QLabel('Hinweis: 0 bei „Bis Seite“ = bis zum Ende des Buches.');page_hint.setWordWrap(True);f.addRow('',page_hint)
         f.addRow('',self.force)
-        hint=QLabel('Mehrere Familiennamen bitte mit Komma trennen, zum Beispiel: Müller, Huber, Schmidt.');hint.setWordWrap(True);f.addRow('',hint)
+        hint=QLabel('Mehrere Suchbegriffe oder Namen bitte mit Komma trennen, zum Beispiel: Müller, Schmied, Testament.');hint.setWordWrap(True);f.addRow('',hint)
         l.addWidget(g)
-        r=QHBoxLayout()
+        r=QGridLayout()
         a=QPushButton('Alles automatisch starten');a.setObjectName('primary');a.clicked.connect(lambda:self.start_task('all'))
-        h=QPushButton('Vorhandenes Buch durchsuchen');h.clicked.connect(lambda:self.start_task('htr'))
-        d=QPushButton('Nur Seiten herunterladen');d.clicked.connect(lambda:self.start_task('download'))
         i=QPushButton('Eigene Scans/Bilder hinzufügen');i.clicked.connect(self.import_own_images)
+        h=QPushButton('Vorhandenes Buch/Scan durchsuchen');h.clicked.connect(lambda:self.start_task('htr'))
         c=QPushButton('Abbrechen');c.clicked.connect(self.cancel)
-        r.addWidget(a);r.addWidget(h);r.addWidget(d);r.addWidget(i);r.addWidget(c);r.addStretch();l.addLayout(r)
+        for index,button in enumerate((a,i,h,c)):r.addWidget(button,index,0)
+        l.addLayout(r)
+        self.document_tools=QGroupBox('Geladenes Dokument bearbeiten');document_layout=QHBoxLayout(self.document_tools)
+        self.read_button=QPushButton('Dokument vollständig lesen');self.read_button.clicked.connect(self.read_own_document)
+        self.book_reader_button=QPushButton('Ganzes Buch anzeigen');self.book_reader_button.clicked.connect(self.show_whole_book)
+        self.table_button=QPushButton('Tabellenstruktur zuweisen / bearbeiten');self.table_button.clicked.connect(self.detect_current_table)
+        self.table_button.setToolTip('Bitte zuerst die erste Seite auswählen, auf der die Tabelle tatsächlich beginnt.')
+        self.train_button=QPushButton('Persönliches Kraken-Modell trainieren');self.train_button.clicked.connect(self.train_personal_model)
+        document_layout.addWidget(self.read_button);document_layout.addWidget(self.book_reader_button);document_layout.addWidget(self.table_button);document_layout.addWidget(self.train_button);document_layout.addStretch()
+        self.document_tools.setVisible(False);l.addWidget(self.document_tools)
         l.addWidget(self.task_panel())
-        return w
+        w.setMinimumHeight(820)
+        scroll=QScrollArea();scroll.setWidgetResizable(True);scroll.setFrameShape(QFrame.Shape.NoFrame);scroll.setWidget(w);return scroll
 
 
     def threshold_spin_controls(self):
@@ -549,7 +1035,7 @@ class Main(QMainWindow):
         self.bookinfo=QPlainTextEdit();self.bookinfo.setReadOnly(True);self.bookinfo.setMaximumHeight(140);l.addWidget(self.bookinfo)
         return w
     def hits_page(self):
-        w=QWidget();l=QVBoxLayout(w);l.addWidget(self.head('Treffer prüfen','Echte Treffer bestätigen, falsche Treffer verwerfen und bei Bedarf wiederherstellen.'))
+        w=QWidget();l=QVBoxLayout(w);l.addWidget(self.head('Trefferseiten','Treffer auswählen – die vollständige Originalseite und Transkription öffnen sich sofort.'))
         review=QHBoxLayout()
         self.hit_filter=QComboBox();self.hit_filter.addItems(['Offene Treffer','Alle Treffer','Bestätigte Treffer','Verworfene Treffer']);self.hit_filter.currentIndexChanged.connect(self.apply_hit_filter)
         confirm=QPushButton('✓ Bestätigen');confirm.clicked.connect(lambda:self.rate_current_hit('confirmed'))
@@ -558,13 +1044,14 @@ class Main(QMainWindow):
         self.review_status=QLabel('Offen: 0   Bestätigt: 0   Verworfen: 0')
         review.addWidget(QLabel('Anzeige'));review.addWidget(self.hit_filter);review.addSpacing(12);review.addWidget(confirm);review.addWidget(reject);review.addWidget(restore);review.addStretch();review.addWidget(self.review_status);l.addLayout(review)
         r=QHBoxLayout();b=QPushButton('Treffer neu laden');b.clicked.connect(self.load_hits);h=QPushButton('Bericht öffnen');h.clicked.connect(self.open_report)
-        for text,fn in [('Zoom +',self.scan_view.zoom_in),('Zoom −',self.scan_view.zoom_out),('Einpassen',self.scan_view.fit),('90° drehen',self.scan_view.rotate_right)]:q=QPushButton(text);q.clicked.connect(fn);r.addWidget(q)
-        self.text_toggle=QPushButton('Text anzeigen');self.text_toggle.setCheckable(True);self.text_toggle.toggled.connect(self.toggle_ocr_panel)
-        r.addWidget(b);r.addWidget(h);r.addWidget(self.text_toggle);r.addStretch();l.addLayout(r)
-        sp=QSplitter();left=QWidget();ll=QVBoxLayout(left);ll.setContentsMargins(0,0,0,0);ll.addWidget(self.table);right=QWidget();rl=QVBoxLayout(right);rl.setContentsMargins(0,0,0,0);rl.addWidget(self.scan_title);self.position_status=QLabel('Position: –');rl.addWidget(self.position_status);self.content_split=QSplitter(Qt.Orientation.Horizontal);scan_panel=QWidget();scan_layout=QVBoxLayout(scan_panel);scan_layout.setContentsMargins(0,0,0,0);scan_layout.addWidget(self.scan_view,1);self.ocr_panel=QWidget();self.ocr_panel.setMinimumWidth(230);self.ocr_panel.setMaximumWidth(360);text_layout=QVBoxLayout(self.ocr_panel);text_layout.setContentsMargins(8,0,0,0);text_layout.addWidget(self.ocr_title);text_layout.addWidget(self.ocr_text,1);self.content_split.addWidget(scan_panel);self.content_split.addWidget(self.ocr_panel);self.content_split.setStretchFactor(0,6);self.content_split.setStretchFactor(1,1);self.ocr_panel.hide();rl.addWidget(self.content_split,1)
-        navrow=QHBoxLayout();prev=QPushButton('◀ Vorherige Seite');prev.clicked.connect(self.previous_page);nxt=QPushButton('Nächste Seite ▶');nxt.clicked.connect(self.next_page);navrow.addWidget(prev);navrow.addStretch();navrow.addWidget(self.page_label);navrow.addStretch();navrow.addWidget(nxt);rl.addLayout(navrow)
-        sp.addWidget(left);sp.addWidget(right);sp.setStretchFactor(0,3);sp.setStretchFactor(1,4);l.addWidget(sp,1)
-        self.table.cellClicked.connect(self.preview_hit);self.table.cellDoubleClicked.connect(self.open_hit);return w
+        r.addWidget(b);r.addWidget(h);r.addStretch();l.addLayout(r);l.addWidget(self.table,1)
+        self.position_status=QLabel('Position: –')
+        self.table.cellClicked.connect(self.open_selected_hit_page);return w
+
+    def open_selected_hit_page(self,row,column=0):
+        """Ein Treffer öffnet sofort die vollständige Seite samt Transkription."""
+        self.preview_hit(row,column)
+        if 0<=row<len(self.hit_rows):self.read_current_hit_page()
     def toggle_ocr_panel(self,visible):
         if not hasattr(self,'ocr_panel'):
             return
@@ -596,6 +1083,8 @@ class Main(QMainWindow):
     def refresh_books(self):
         cur=self.book.currentText();d=self.pd();names=sorted([p.name for p in d.iterdir() if p.is_dir() and p.name.casefold() not in {'treffer','berichte'}]) if d.exists() else [];self.book.clear();self.book.addItems(names);self.book.setCurrentText(cur);self.update_book()
     def update_book(self):
+        has_document=bool(self.project.currentText().strip() and self.book.currentText().strip() and self.bkd().exists() and find_images(self.bkd()))
+        if hasattr(self,'document_tools'):self.document_tools.setVisible(has_document)
         if not hasattr(self,'bookinfo'):return
         if hasattr(self,'current_selection'):self.current_selection.setText(f'Aktuelle Auswahl: {self.project.currentText()}  →  {self.book.currentText()}')
         d=self.bkd();imgs=find_images(d) if d.exists() else [];s=f'Buchordner: {d}\nScans: {len(imgs)}\n';q=d/'quelle.txt';s+=('\n'+q.read_text(encoding='utf-8',errors='replace')) if q.exists() else '';self.bookinfo.setPlainText(s)
@@ -605,7 +1094,8 @@ class Main(QMainWindow):
             for b in p.iterdir():
                 if b.is_dir() and b.name.casefold() not in {'treffer','berichte'}:books+=1;scans+=len(find_images(b))
         vals={'Projekte':len(ps),'Bücher':books,'Scans':scans,'Treffer':len(read_hits(self.pd())) if self.project.currentText() else 0}
-        for k,v in vals.items():self.stats[k].setText(str(v))
+        for k,v in vals.items():
+            if k in self.stats:self.stats[k].setText(str(v))
         if hasattr(self,'stattext'):self.stattext.setPlainText('\n'.join(f'{k}: {v}' for k,v in vals.items()))
     def load_book_table(self):
         if not hasattr(self,'book_table'):return
@@ -855,19 +1345,90 @@ class Main(QMainWindow):
             if matches:return matches[0]
         return None
 
+    def resolve_page_textfile(self,img):
+        """Findet die vollständige Transkription einer beliebigen Buchseite."""
+        img=Path(img);book_dir=img.parent.parent if img.parent.name.casefold() in {'originalseiten','scans'} else img.parent
+        candidates=[
+            img.with_suffix('.txt'),book_dir/'HTR'/'Texte'/f'{img.stem}.txt',
+            book_dir/'HTR'/f'{img.stem}.txt',book_dir/'OCR'/'Texte'/f'{img.stem}.txt',
+            book_dir/'OCR'/f'{img.stem}.txt',book_dir/'Texte'/f'{img.stem}.txt',
+        ]
+        return next((path for path in candidates if path.exists() and path.is_file() and path.stat().st_size > 0),None)
+
+    def resolve_page_layoutfile(self,img):
+        img=Path(img);book_dir=img.parent.parent if img.parent.name.casefold() in {'originalseiten','scans'} else img.parent
+        candidates=[book_dir/'HTR'/'Layout'/f'{img.stem}.txt',book_dir/'OCR'/'Layout'/f'{img.stem}.txt']
+        return next((path for path in candidates if path.exists() and path.is_file() and path.stat().st_size > 0),None)
+
+    def resolve_page_structurefile(self,img):
+        img=Path(img);book_dir=img.parent.parent if img.parent.name.casefold() in {'originalseiten','scans'} else img.parent
+        candidates=[book_dir/'HTR'/'Struktur'/f'{img.stem}.json',book_dir/'OCR'/'Struktur'/f'{img.stem}.json']
+        return next((path for path in candidates if path.exists() and path.is_file()),None)
+
+    def resolve_page_altofile(self,img):
+        img=Path(img);book_dir=img.parent.parent if img.parent.name.casefold() in {'originalseiten','scans'} else img.parent
+        candidates=[book_dir/'HTR'/'ALTO'/f'{img.stem}.xml',book_dir/'OCR'/'ALTO'/f'{img.stem}.xml']
+        return next((path for path in candidates if path.exists() and path.is_file()),None)
+
+    def open_page_reader(self,img,text_path=None,highlight='',bbox=None):
+        if not img or not Path(img).exists():
+            QMessageBox.warning(self,'Ganze Seite lesen','Die Originalseite wurde nicht gefunden.');return
+        text_path=self.resolve_page_layoutfile(img) or (Path(text_path) if text_path else self.resolve_page_textfile(img))
+        structure_path=self.resolve_page_structurefile(img)
+        alto_path=self.resolve_page_altofile(img)
+        dialog=FullPageReader(Path(img),text_path,highlight,bbox,structure_path,alto_path,self);dialog.exec()
+
+    def show_whole_book(self):
+        """Blättert durch alle importierten Seiten mit Raster und Tabellentext."""
+        images=find_images(self.bkd())
+        if not images:
+            QMessageBox.information(self,'Ganzes Buch anzeigen','Für dieses Buch wurden noch keine Seiten importiert.');return
+        requested=self.start.value();index=next((i for i,image in enumerate(images) if image_page_number(image)==requested),0)
+        while 0<=index<len(images):
+            image=images[index]
+            dialog=FullPageReader(
+                image,self.resolve_page_layoutfile(image) or self.resolve_page_textfile(image),'',None,
+                self.resolve_page_structurefile(image),self.resolve_page_altofile(image),self,
+                can_previous=index>0,can_next=index<len(images)-1,
+            )
+            dialog.exec()
+            if not dialog.navigation_delta:break
+            index+=dialog.navigation_delta
+
+    def read_current_hit_page(self):
+        row=self.table.currentRow()
+        if row<0 or row>=len(self.hit_rows):
+            QMessageBox.information(self,'Ganze Trefferseite lesen','Bitte zuerst einen Treffer auswählen.');return
+        hit=self.hit_rows[row];img=self.resolve_hit_image(hit);bbox=None
+        if img:
+            saved=self.saved_bbox(hit,img)
+            bbox=saved or self.estimated_line_bbox(hit,img)[0]
+        self.open_page_reader(img,self.resolve_hit_textfile(hit,img),hit.get('name',''),bbox)
+
     def show_hit_text(self,h,img=None):
         self.ocr_text.clear();self.ocr_title.setText('Erkannter Text')
-        txt=self.resolve_hit_textfile(h,img)
-        if not txt:
+        structure_path=self.resolve_page_structurefile(img) if img else None
+        alto_path=self.resolve_page_altofile(img) if img else None
+        rendered_table=False
+        if structure_path and alto_path:
+            try:
+                self.ocr_text.setHtml(transcription_html_from_grid(alto_path,load_structure(structure_path)))
+                self.ocr_title.setText('Erkannter Text — als Tabelle nach dem Original')
+                txt=None;rendered_table=True
+            except Exception:
+                txt=self.resolve_hit_textfile(h,img)
+        else:txt=self.resolve_hit_textfile(h,img)
+        if not txt and not rendered_table:
             self.ocr_text.setPlainText('Für diesen Treffer wurde keine passende Textdatei gefunden.\n\nDie Originalseite kann trotzdem geprüft werden.')
             return
-        try:
-            content=txt.read_text(encoding='utf-8-sig',errors='replace')
-        except Exception as exc:
-            self.ocr_text.setPlainText(f'Die Textdatei konnte nicht gelesen werden:\n{exc}')
-            return
-        self.ocr_title.setText(f'Erkannter Text — {txt.name}')
-        self.ocr_text.setPlainText(content)
+        if txt:
+            try:
+                content=txt.read_text(encoding='utf-8-sig',errors='replace')
+            except Exception as exc:
+                self.ocr_text.setPlainText(f'Die Textdatei konnte nicht gelesen werden:\n{exc}')
+                return
+            self.ocr_title.setText(f'Erkannter Text — {txt.name}')
+            self.ocr_text.setPlainText(content)
         document=self.ocr_text.document()
         formats=[]
         # Zuerst das tatsächlich erkannte Trefferwort, danach mögliche Suchvarianten.
@@ -916,6 +1477,10 @@ class Main(QMainWindow):
             except ValueError:self.current_image_index=-1
             self.page_label.setText(f'Seite {self.current_image_index+1} / {len(self.current_images)}' if self.current_image_index>=0 else 'Seite – / –')
         if img and self.scan_view.show_image(img,bbox):
+            structure_path=self.resolve_page_structurefile(img)
+            if structure_path:
+                try:self.scan_view.show_structure(load_structure(structure_path))
+                except Exception:pass
             marker=f' — Zeile {h.get("line","?")} markiert ({quality})' if bbox else ''
             self.scan_title.setText(f"{h['name']} — {h['book']} — Seite {h['page']}"+marker)
             self.position_status.setText('Position: manuell gespeichert' if quality=='manuell gespeichert' else 'Position: automatisch')
@@ -926,7 +1491,7 @@ class Main(QMainWindow):
         if end_page and end_page < start_page:
             QMessageBox.warning(self,'Seitenbereich prüfen','Die Endseite darf nicht kleiner als die Startseite sein.');return
         page_limit=0 if end_page==0 else end_page-start_page+1
-        p={'base':str(self.bd()),'project':self.project.currentText().strip(),'book':self.book.currentText().strip(),'url':self.url.text().strip(),'start':start_page,'end':end_page,'limit':page_limit,'threshold':self.threshold.value(),'force':self.force.isChecked(),'names':self.names.text().strip()}
+        p={'base':str(self.bd()),'project':self.project.currentText().strip(),'book':self.book.currentText().strip(),'url':self.url.text().strip(),'start':start_page,'end':end_page,'limit':page_limit,'threshold':self.threshold.value(),'force':self.force.isChecked(),'names':self.names.text().strip(),'read_only':a=='read'}
         if not p['project'] or not p['book']:QMessageBox.warning(self,'Eingabe prüfen','Projekt und Buch ausfüllen.');return
         local_mode_count=0
         if a in ('download','all') and not p['url']:
@@ -969,6 +1534,10 @@ class Main(QMainWindow):
             # Trefferdateien werden ausschließlich nach Ende der Texterkennung eingelesen.
             QTimer.singleShot(100,self.safe_finish_refresh)
             (QMessageBox.information if ok else QMessageBox.critical)(self,'ArchivAgent',msg)
+            if ok and self.pending_full_read:
+                QTimer.singleShot(150,self.open_pending_full_read)
+            elif not ok:
+                self.pending_full_read=None
         except Exception as e:
             write_crash_log('Fehler in thread_done',e)
             QMessageBox.critical(self,'ArchivAgent',f'Abschlussfehler: {e}\n\nDetails stehen in archivagent_crash.log.')
@@ -977,6 +1546,9 @@ class Main(QMainWindow):
         except Exception as e:
             self.log.appendPlainText(f'[ABSCHLUSS-FEHLER] {e}')
             write_crash_log('Fehler beim Abschluss-Refresh',e)
+    def open_pending_full_read(self):
+        img=self.pending_full_read;self.pending_full_read=None
+        if img:self.open_page_reader(img)
     def cancel(self):
         if self.worker:self.worker.cancel()
     def open_project(self):d=self.pd();d.mkdir(parents=True,exist_ok=True);QDesktopServices.openUrl(QUrl.fromLocalFile(str(d)))
@@ -1006,6 +1578,7 @@ class Main(QMainWindow):
             imported=import_image_files(files,self.bkd())
             if not imported:
                 QMessageBox.warning(self,'Eigene Bilder hinzufügen','Keine unterstützten Bilddateien ausgewählt.');return
+            self.last_imported_image=imported[0] if len(imported)==1 else None
             first=image_page_number(imported[0]) or 1;last=image_page_number(imported[-1]) or first
             self.start.setValue(first);self.end.setValue(last);self.url.clear();self.refresh()
             self.project.setCurrentText(project);self.refresh_books();self.book.setCurrentText(book);self.update_book()
@@ -1013,11 +1586,172 @@ class Main(QMainWindow):
                 self,'Bilder hinzugefügt',
                 f'{len(imported)} Bilddatei(en) wurden in Originalseiten eingefügt und als '
                 f'Seite {first} bis {last} nummeriert.\n\n'
-                'Familiennamen eintragen und anschließend „Alles automatisch starten“ wählen.'
+                'Für die Namenssuche anschließend Familiennamen eintragen und „Alles automatisch starten“ wählen.\n\n'
+                'Für eine vollständige Transkription ohne Namenssuche jetzt „Dokument vollständig lesen“ wählen.'
             )
         except Exception as exc:
             write_crash_log('Fehler beim Import eigener Bilder',exc)
             QMessageBox.critical(self,'Import fehlgeschlagen',str(exc))
+    def read_own_document(self):
+        project=self.project.currentText().strip();book=self.book.currentText().strip()
+        if not project or not book:
+            QMessageBox.warning(self,'Dokument vollständig lesen','Bitte zuerst Projekt und Buch angeben.');return
+        try:
+            image=Path(self.last_imported_image) if self.last_imported_image and Path(self.last_imported_image).exists() else None
+            available=find_images(self.bkd())
+            if image not in available:image=None
+            if image is None and len(available)==1:image=available[0]
+            if image is None:
+                selected,_=QFileDialog.getOpenFileName(
+                    self,'Bereits importierte Seite auswählen',str(self.bkd()/'Originalseiten'),
+                    'Bilddateien (*.png *.jpg *.jpeg *.tif *.tiff *.jp2 *.webp)'
+                )
+                if not selected:return
+                candidate=Path(selected)
+                if candidate not in available:
+                    QMessageBox.warning(self,'Dokument vollständig lesen','Bitte eine bereits über „Eigene Scans/Bilder hinzufügen“ importierte Seite auswählen.');return
+                image=candidate
+            page=image_page_number(image) or 1
+            self.start.setValue(page);self.end.setValue(page);self.url.clear()
+            self.pending_full_read=image
+            self.log.appendPlainText(f'[LESEMODUS] {image.name} wird vollständig geprüft und bei Bedarf neu transkribiert; eine Namenseingabe ist nicht erforderlich.')
+            self.start_task('read')
+        except Exception as exc:
+            self.pending_full_read=None;write_crash_log('Fehler im vollständigen Lesemodus',exc);QMessageBox.critical(self,'Lesemodus fehlgeschlagen',str(exc))
+    def selected_imported_image(self,title):
+        image=Path(self.last_imported_image) if self.last_imported_image and Path(self.last_imported_image).exists() else None
+        available=find_images(self.bkd())
+        if image not in available:image=None
+        if image is None and available:
+            requested=self.start.value()
+            image=next((candidate for candidate in available if image_page_number(candidate)==requested),None)
+        if image is None and len(available)==1:image=available[0]
+        if image is None:
+            selected,_=QFileDialog.getOpenFileName(self,title,str(self.bkd()/'Originalseiten'),'Bilddateien (*.png *.jpg *.jpeg *.tif *.tiff *.jp2 *.webp)')
+            if not selected:return None
+            candidate=Path(selected)
+            if candidate not in available:
+                QMessageBox.warning(self,title,'Bitte eine bereits importierte Seite auswählen.');return None
+            image=candidate
+        return image
+    def select_table_page(self):
+        """Lässt die erste echte Registerseite ausdrücklich auswählen.
+
+        Umschlag, Vorsatz und Inhaltsseiten dürfen nicht versehentlich als
+        Tabellenraster des Buches behandelt werden. Deshalb wird hier nicht
+        stillschweigend die zuletzt importierte (oft erste) Seite verwendet.
+        """
+        available=find_images(self.bkd())
+        if not available:
+            QMessageBox.warning(self,'Tabellenstruktur erkennen','Für dieses Buch wurden noch keine Seiten importiert.');return None
+        labels=[]
+        for index,image in enumerate(available,1):
+            page=image_page_number(image) or index
+            labels.append(f'Seite {page} — {image.name}')
+        requested=self.start.value()
+        initial=next((index for index,image in enumerate(available) if image_page_number(image)==requested),0)
+        label,accepted=QInputDialog.getItem(
+            self,'Erste Tabellenseite auswählen',
+            'Auf welcher Seite beginnt die Tabelle?\nUmschlag- und Vorsatzseiten bleiben ohne Raster.',
+            labels,initial,False
+        )
+        if not accepted:return None
+        return available[labels.index(label)]
+    def detect_current_table(self):
+        project=self.project.currentText().strip();book=self.book.currentText().strip()
+        if not project or not book:
+            QMessageBox.warning(self,'Tabellenstruktur erkennen','Bitte zuerst Projekt und Buch angeben.');return
+        image=self.select_table_page()
+        if not image:return
+        try:
+            folder=self.bkd()/'HTR'/'Struktur';json_path=folder/f'{image.stem}.json';overlay_path=folder/f'{image.stem}_Raster.png'
+            structure=load_structure(json_path) if json_path.exists() else None
+            # Ein früherer Versuch auf Umschlag/Vorsatz kann eine leere JSON-Datei
+            # hinterlassen. Sie darf eine neue Erkennung der echten Tabellenseite
+            # nicht blockieren.
+            if structure is None or len(structure.horizontal_lines)<2 or len(structure.vertical_lines)<2:
+                structure=detect_table_structure(image)
+                save_structure(structure,json_path)
+            draw_structure_overlay(image,structure,overlay_path)
+            if len(structure.horizontal_lines)<2 or len(structure.vertical_lines)<2:
+                QMessageBox.warning(self,'Tabellenstruktur erkennen','Es wurde noch kein vollständiges Tabellenraster erkannt. Die erkannten Linien werden trotzdem zur Prüfung angezeigt.')
+            dialog=TableStructureDialog(image,overlay_path,structure,json_path,self)
+            if dialog.exec()==QDialog.DialogCode.Accepted:
+                structure=load_structure(json_path)
+                answer=QMessageBox.question(
+                    self,'Tabellenraster als Buchvorlage verwenden',
+                    f'Soll dieses Raster ab {image.name} auf alle folgenden Buchseiten übertragen werden?\n\nUmschlag- und Vorsatzseiten davor bleiben ohne Tabelle.',
+                    QMessageBox.StandardButton.Yes|QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.Yes,
+                )
+                if answer==QMessageBox.StandardButton.Yes:
+                    count=self.apply_table_template(image,structure)
+                    QMessageBox.information(self,'Buchraster gespeichert',f'Die Tabellenstruktur wurde für {count} Seite(n) ab der gewählten Startseite gespeichert. Sie erscheint jetzt beim Durchblättern und bei Treffern.')
+        except Exception as exc:
+            write_crash_log('Fehler bei der Tabellenerkennung',exc);QMessageBox.critical(self,'Tabellenerkennung fehlgeschlagen',str(exc))
+
+    def apply_table_template(self,start_image,structure):
+        images=find_images(self.bkd())
+        try:start_index=images.index(Path(start_image))
+        except ValueError:return 0
+        folder=self.bkd()/'HTR'/'Struktur';folder.mkdir(parents=True,exist_ok=True)
+        metadata={'start_image':Path(start_image).name,'start_page':image_page_number(start_image),'source_structure':f'{Path(start_image).stem}.json'}
+        (folder/'Buchvorlage.json').write_text(json.dumps(metadata,ensure_ascii=False,indent=2),encoding='utf-8')
+        count=0
+        for image in images[start_index:]:
+            pixmap=QPixmap(str(image))
+            if pixmap.isNull():continue
+            target=scale_structure(structure,pixmap.width(),pixmap.height())
+            save_structure(target,folder/f'{image.stem}.json');count+=1
+        return count
+
+    def train_personal_model(self):
+        """Startet echtes Kraken-Fine-Tuning mit den gespeicherten Ground-Truth-Dateien."""
+        if hasattr(self,'training_process') and self.training_process.state()!=QProcess.ProcessState.NotRunning:
+            QMessageBox.information(self,'Modelltraining','Es läuft bereits ein Modelltraining.');return
+        ground_truth=sorted((self.bd()/'Projekte').rglob('*.groundtruth.xml')) if (self.bd()/'Projekte').exists() else []
+        line_count=0
+        for path in ground_truth:
+            try:line_count+=sum(1 for element in ET.parse(path).getroot().iter() if element.tag.rsplit('}',1)[-1]=='TextLine')
+            except Exception:pass
+        if not ground_truth or not line_count:
+            QMessageBox.information(self,'Modelltraining','Noch keine Trainingsdaten vorhanden. Zuerst Tabellen korrigieren und „Korrektur speichern“ wählen.');return
+        if line_count<100:
+            answer=QMessageBox.warning(self,'Wenig Trainingsmaterial',f'Bislang liegen nur {line_count} korrigierte Textzeilen vor. Das ist für ein zuverlässiges Modell sehr wenig und kann die Erkennung sogar verschlechtern. Trotzdem echtes Fine-Tuning starten?',QMessageBox.StandardButton.Yes|QMessageBox.StandardButton.No,QMessageBox.StandardButton.No)
+            if answer!=QMessageBox.StandardButton.Yes:return
+        scripts=self.bd()/'runtime'/'Scripts';ketos=scripts/'ketos.exe'
+        if not ketos.exists():
+            QMessageBox.critical(self,'Modelltraining',f'Krakens Trainingsprogramm wurde nicht gefunden:\n{ketos}\n\nBitte den OCR-Assistenten erneut ausführen.');return
+        base_models=list((self.bd()/'Models').rglob('german_handwriting.mlmodel'))
+        if not base_models:base_models=list((self.bd()/'Models').rglob('*.mlmodel'))
+        if not base_models:
+            QMessageBox.critical(self,'Modelltraining','Das Ausgangsmodell wurde nicht gefunden.');return
+        base_model=sorted(base_models,key=lambda path:path.stat().st_mtime)[0]
+        output_dir=self.bd()/'Models'/'Persoenlich';output_dir.mkdir(parents=True,exist_ok=True)
+        checkpoint_dir=output_dir/'checkpoints';checkpoint_dir.mkdir(parents=True,exist_ok=True)
+        # Kraken 7: --load startet echtes Fine-Tuning; am Ende wird das beste
+        # Checkpoint automatisch in ein verteilbares safetensors-Modell gewandelt.
+        args=['train','-f','xml','--linetype','bbox','--load',str(base_model),'--resize','add',
+              '--checkpoint-path',str(checkpoint_dir),'--weights-format','safetensors','--lag','5',*map(str,ground_truth)]
+        self.training_dialog=QProgressDialog(f'Kraken trainiert mit {line_count} korrigierten Zeilen…','Training abbrechen',0,0,self)
+        self.training_dialog.setWindowTitle('Persönliches Kraken-Modell');self.training_dialog.setWindowModality(Qt.WindowModality.NonModal);self.training_dialog.setMinimumDuration(0)
+        self.training_process=QProcess(self);self.training_process.setProgram(str(ketos));self.training_process.setArguments(args);self.training_process.setWorkingDirectory(str(output_dir));self.training_process.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
+        self.training_process.readyReadStandardOutput.connect(self.training_output)
+        self.training_process.finished.connect(self.training_finished);self.training_dialog.canceled.connect(self.training_process.kill)
+        self.log.appendPlainText(f'[TRAINING] {line_count} Zeilen aus {len(ground_truth)} Seite(n); Ausgangsmodell: {base_model.name}')
+        self.training_process.start()
+
+    def training_output(self):
+        text=bytes(self.training_process.readAllStandardOutput()).decode('utf-8',errors='replace').strip()
+        if text:self.log.appendPlainText('[KETOS] '+text)
+
+    def training_finished(self,exit_code,exit_status):
+        self.training_dialog.close();folder=self.bd()/'Models'/'Persoenlich'
+        models=sorted(list(folder.rglob('*.safetensors'))+list(folder.rglob('*.mlmodel')),key=lambda path:path.stat().st_mtime,reverse=True)
+        if exit_code==0 and models:
+            QMessageBox.information(self,'Modelltraining abgeschlossen',f'Das persönliche Kraken-Modell wurde erzeugt:\n{models[0]}\n\nEs wird bei der nächsten Texterkennung automatisch verwendet.')
+        else:
+            QMessageBox.critical(self,'Modelltraining fehlgeschlagen',f'Ketos wurde mit Fehlercode {exit_code} beendet. Die Einzelheiten stehen im Protokoll auf der Startseite.')
     def style(self):self.setStyleSheet("QMainWindow,QWidget{background:#f4f6f8;color:#1f2933;font-family:'Segoe UI';font-size:10.5pt} QListWidget{background:#17212b;color:#e7edf3;border:0;padding:10px;font-size:11pt} QListWidget::item{padding:13px 12px;border-radius:6px} QListWidget::item:selected{background:#2d80c3;color:white} QGroupBox,QFrame#card{background:white;border:1px solid #d8dee5;border-radius:8px;margin-top:10px;padding:14px} QLineEdit,QSpinBox,QDoubleSpinBox,QPlainTextEdit,QComboBox,QTableWidget{background:white;border:1px solid #c8d0d9;border-radius:5px;padding:6px} QPushButton{background:white;border:1px solid #aeb8c2;border-radius:6px;padding:8px 14px} QPushButton#primary{background:#1769aa;color:white;border:1px solid #1769aa;font-weight:600} QProgressBar{border:1px solid #c8d0d9;border-radius:5px;background:white;text-align:center} QProgressBar::chunk{background:#2d80c3}")
 
 def crash_log_path():

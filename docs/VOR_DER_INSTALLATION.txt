@@ -1,4 +1,4 @@
-ArchivAgent 7.0 RC2
+ArchivAgent 7.1 RC19
 
 ArchivAgent lädt keine OCR-Komponenten automatisch herunter.
 

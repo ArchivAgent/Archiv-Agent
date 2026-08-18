@@ -19,3 +19,9 @@ def test_backend_uses_console_executable():
     assert "runtime_kraken" in backend
     assert 'str(kraken),' in backend
     assert '"-m", "kraken"' not in backend
+
+def test_page_without_detected_lines_is_skipped_instead_of_aborting_book():
+    backend=(ROOT/"src"/"backend"/"archiv_htr.py").read_text(encoding="utf-8")
+    assert '"übersprungen"' in backend
+    assert "[HTR ÜBERSPRUNGEN" in backend
+    assert 'raise RuntimeError(f"ALTO-Ausgabe konnte nicht gelesen werden' not in backend
