@@ -1,5 +1,5 @@
 #define AppName "ArchivAgent"
-#define AppVersion "7.0.0 RC2"
+#define AppVersion "7.1.0 RC19"
 #define AppExe "ArchivAgent.exe"
 #define ModelId "a0daddf4-4a50-502d-91d7-8f72e8577a33"
 
@@ -14,7 +14,7 @@ DefaultDirName=C:\ArchivAgent
 DefaultGroupName=ArchivAgent
 PrivilegesRequired=admin
 OutputDir=..\output
-OutputBaseFilename=ArchivAgent_Setup_7.0.0_RC2
+OutputBaseFilename=ArchivAgent_Setup_7.1.0_RC19
 Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern

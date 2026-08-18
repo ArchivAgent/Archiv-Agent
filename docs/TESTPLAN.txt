@@ -1,4 +1,4 @@
-ARCHIVAGENT 7.0 RC2 – TESTPLAN
+ARCHIVAGENT 7.1 RC19 – TESTPLAN
 
 OHNE SETUP:
 [ ] scripts\run_ocr_assistant_dev.bat starten
@@ -18,3 +18,13 @@ MIT SETUP:
 [ ] Bei vorhandener, nicht startbarer kraken.exe zeigt der Test Fehlercode und DLL-/PyTorch-Hinweis
 [ ] Nach erfolgreichem Test startet eine echte HTR-Erkennung über kraken.exe
 [ ] Seiten 20 bis 22 erzeugen genau drei Textdateien
+[ ] „Dokument vollständig lesen“ funktioniert ohne eingetragenen Familiennamen
+[ ] Lesefenster zeigt Original oben und vollständige Transkription unten
+[ ] Zeilen und Spalten stehen annähernd an der Position des Originals; Transkription ist bearbeitbar
+[ ] HTR\ALTO enthält die XML-Koordinaten und HTR\Layout die räumliche Textfassung
+[ ] „Verdächtige Zeichen markieren“ hebt Wörter mit Buchstaben und Ziffern hervor
+[ ] Korrigierte Fassung wird separat gespeichert; OCR-Rohtext bleibt unverändert
+[ ] „Ganze Trefferseite lesen“ öffnet denselben Lesemodus und markiert den Namen
+[ ] Nach Einzelimport verwendet „Dokument vollständig lesen“ denselben Scan ohne zweite Upload-Abfrage
+[ ] Schaltflächen bleiben auch ohne Vollbild vollständig lesbar
+[ ] Kleiner/breiter Ausschnitt wird vorbereitet oder meldet klar, wenn keine Textzeile erkannt wurde

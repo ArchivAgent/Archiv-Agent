@@ -1,6 +1,6 @@
 @echo off
 chcp 65001 >nul
-title ArchivAgent 7.0 RC2 - geprüfter Release-Builder
+title ArchivAgent 7.1 RC19 - geprüfter Release-Builder
 cd /d "%~dp0"
 
 "C:\ArchivAgent\kraken_env\Scripts\python.exe" build_release.py
